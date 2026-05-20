@@ -8,7 +8,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
 
 # --- Configuration: edit before distributing ---
-$GitHubRepo = if ($env:NP_GITHUB_REPO) { $env:NP_GITHUB_REPO } else { "YOUR_GITHUB_USERNAME/np-rhino-scripts" }
+$GitHubRepo = if ($env:NP_GITHUB_REPO) { $env:NP_GITHUB_REPO } else { "oliveoi1/np-rhino-scripts" }
 $Branch = if ($env:NP_GITHUB_BRANCH) { $env:NP_GITHUB_BRANCH } else { "main" }
 
 Write-Host "NP Rhino Scripts Installer (Windows)"

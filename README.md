@@ -15,12 +15,14 @@ Production scripts for Rhino 8 (Mac and Windows).
 1. Right-click `installers/install_windows.ps1` → **Run with PowerShell**.
 2. Tools install to `Documents\NP Rhino Scripts`.
 
-### GitHub repo (for your team)
+### GitHub repo
 
-Before distributing installers, set your GitHub repo in the installer or set environment variable:
+**https://github.com/oliveoi1/np-rhino-scripts**
+
+Installers download from this repo by default. To use a different repo:
 
 ```bash
-export NP_GITHUB_REPO="your-org/np-rhino-scripts"
+export NP_GITHUB_REPO="your-org/your-repo"
 ```
 
 On first install, edit `Documents/NP Rhino Scripts/_user_data/github_config.json` if needed.

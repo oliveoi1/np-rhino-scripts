@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # --- Configuration: edit before distributing ---
-GITHUB_REPO="${NP_GITHUB_REPO:-YOUR_GITHUB_USERNAME/np-rhino-scripts}"
+GITHUB_REPO="${NP_GITHUB_REPO:-oliveoi1/np-rhino-scripts}"
 BRANCH="${NP_GITHUB_BRANCH:-main}"
 
 echo "NP Rhino Scripts Installer (Mac)"

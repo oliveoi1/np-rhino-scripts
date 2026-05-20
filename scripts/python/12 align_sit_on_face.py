@@ -199,6 +199,21 @@ def pick_target_point_on_face(face, plane):
     return project_to_plane(raw, plane)
 
 
+def selection_object_filter():
+    """Filter for GetObjects; IronPython lacks rs.filter.anyobject."""
+    try:
+        if hasattr(rs.filter, "allobjects"):
+            return rs.filter.allobjects
+    except Exception:
+        pass
+    try:
+        if hasattr(rs.filter, "object"):
+            return rs.filter.object
+    except Exception:
+        pass
+    return 0
+
+
 def move_selection(obj_ids, move_vec):
     for obj_id in obj_ids:
         if rs.IsObjectLocked(obj_id):
@@ -230,7 +245,7 @@ def main():
     try:
         obj_ids = rs.GetObjects(
             "Select objects to move (block instances, groups, solids)",
-            rs.filter.anyobject,
+            selection_object_filter(),
             preselect=True,
             group=True,
         )

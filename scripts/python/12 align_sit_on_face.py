@@ -34,20 +34,50 @@ def to_point3d(pt):
     return Rhino.Geometry.Point3d(pt[0], pt[1], pt[2])
 
 
-def bbox_bottom_center(obj_ids):
-    corners = rs.BoundingBox(obj_ids)
-    if not corners:
+def object_world_bbox(obj_id):
+    rh = rs.coercerhinoobject(obj_id, True, True)
+    if rh is None:
         return None
-    pts = [to_point3d(c) for c in corners]
-    min_z = min(p.Z for p in pts)
+    try:
+        geom = rh.Geometry
+        if rs.IsBlockInstance(obj_id):
+            return geom.GetBoundingBox(rh.InstanceXform)
+        return geom.GetBoundingBox(True)
+    except Exception:
+        return None
+
+
+def union_world_bbox(obj_ids):
+    union = Rhino.Geometry.BoundingBox.Empty
+    found = False
+    for obj_id in obj_ids:
+        bb = object_world_bbox(obj_id)
+        if bb is None:
+            continue
+        if not found:
+            union = bb
+            found = True
+        else:
+            union.Union(bb)
+    if not found:
+        corners = rs.BoundingBox(obj_ids)
+        if not corners:
+            return None
+        pts = [to_point3d(c) for c in corners]
+        union = Rhino.Geometry.BoundingBox(pts)
+    return union
+
+
+def bbox_bottom_center(obj_ids):
+    bb = union_world_bbox(obj_ids)
+    if bb is None or not bb.IsValid:
+        return None
+    min_z = bb.Min.Z
     tol = sc.doc.ModelAbsoluteTolerance if sc.doc else 0.01
     if tol <= 0:
         tol = 0.01
-    bottom = [p for p in pts if abs(p.Z - min_z) <= tol * 10.0]
-    if not bottom:
-        bottom = pts
-    cx = sum(p.X for p in bottom) / float(len(bottom))
-    cy = sum(p.Y for p in bottom) / float(len(bottom))
+    cx = 0.5 * (bb.Min.X + bb.Max.X)
+    cy = 0.5 * (bb.Min.Y + bb.Max.Y)
     return Rhino.Geometry.Point3d(cx, cy, min_z)
 
 
@@ -169,25 +199,61 @@ def pick_target_point_on_face(face, plane):
     return project_to_plane(raw, plane)
 
 
+def move_one_object(obj_id, move_vec):
+    if rs.IsObjectLocked(obj_id):
+        return False, "locked"
+
+    translation = Rhino.Geometry.Transform.Translation(move_vec)
+
+    if rs.IsBlockInstance(obj_id):
+        rh = rs.coercerhinoobject(obj_id, True, True)
+        if rh is None:
+            return False, "no_object"
+        try:
+            rh.InstanceXform = translation * rh.InstanceXform
+            rh.CommitChanges()
+            return True, "instance"
+        except Exception:
+            pass
+
+    try:
+        delta = (move_vec.X, move_vec.Y, move_vec.Z)
+        if rs.MoveObject(obj_id, delta):
+            return True, "move"
+    except Exception:
+        pass
+
+    try:
+        if rs.TransformObject(obj_id, translation, copy=False):
+            return True, "transform"
+    except Exception:
+        pass
+
+    return False, "failed"
+
+
 def move_selection(obj_ids, move_vec):
-    xform = Rhino.Geometry.Transform.Translation(move_vec)
     moved = 0
+    methods = []
     for obj_id in obj_ids:
         if not rs.IsObject(obj_id):
             continue
-        if rs.IsObjectLocked(obj_id):
-            rs.MessageBox("Selection contains a locked object. Unlock and retry.")
-            return False
-        rs.TransformObject(obj_id, xform, copy=False)
+        ok, method = move_one_object(obj_id, move_vec)
+        if not ok:
+            if method == "locked":
+                rs.MessageBox("Selection contains a locked object. Unlock and retry.")
+            return False, moved, methods
         moved += 1
-    return moved > 0
+        methods.append(method)
+    return moved > 0, moved, methods
 
 
 def main():
     rs.EnableRedraw(False)
     try:
         obj_ids = rs.GetObjects(
-            "Select objects to move (blocks, groups, solids)",
+            "Select objects to move (block instances, groups, solids)",
+            rs.filter.anyobject,
             preselect=True,
             group=True,
         )
@@ -216,12 +282,22 @@ def main():
             rs.MessageBox("Source already at target (no move needed).")
             return
 
-        if not move_selection(obj_ids, move_vec):
+        ok, moved_count, methods = move_selection(obj_ids, move_vec)
+        if not ok:
+            rs.MessageBox(
+                "Move failed. Block instances use InstanceXform; check selection is not locked.",
+                0,
+                "Align Sit On Face",
+            )
             return
 
         rs.MessageBox(
-            "Moved {} object(s).\nMove: {:.4f}, {:.4f}, {:.4f}".format(
-                len(obj_ids), move_vec.X, move_vec.Y, move_vec.Z
+            "Moved {} object(s).\nMove: {:.4f}, {:.4f}, {:.4f}\nMethods: {}".format(
+                moved_count,
+                move_vec.X,
+                move_vec.Y,
+                move_vec.Z,
+                ", ".join(methods) if methods else "ok",
             ),
             0,
             "Align Sit On Face",

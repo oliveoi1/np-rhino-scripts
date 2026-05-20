@@ -25,6 +25,21 @@ for _p in (os.path.join(_INSTALL_ROOT, "shared"), _SCRIPT_DIR):
     if _p and _p not in sys.path:
         sys.path.insert(0, _p)
 
+try:
+    import importlib
+except ImportError:
+    importlib = None
+
+import group_cut_utils as gcu
+
+try:
+    if importlib and hasattr(importlib, "reload"):
+        gcu = importlib.reload(gcu)
+    else:
+        gcu = reload(gcu)  # noqa: F821 - IronPython 2.7
+except Exception:
+    pass
+
 
 def to_point3d(pt):
     if pt is None:
@@ -106,15 +121,6 @@ def pick_source_reference(obj_ids):
     return bbox_bottom_center(obj_ids)
 
 
-def geometry_filter_for_faces():
-    """Surface + Brep (polysurfaces are Breps in Rhino; no ObjectType.Polysurface)."""
-    ot = Rhino.DocObjects.ObjectType
-    filt = ot.Surface
-    if hasattr(ot, "Brep"):
-        filt = filt | ot.Brep
-    return filt
-
-
 def write_prompt(msg):
     try:
         Rhino.RhinoApp.WriteLine(msg)
@@ -164,17 +170,21 @@ def closest_face_on_brep(brep, test_pt):
 
 
 def pick_host_brep():
-    go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt("Select host part with recess (polysurface)")
-    go.GeometryFilter = geometry_filter_for_faces()
-    go.SubObjectSelect = False
-    go.EnablePreSelect(False, True)
-    go.Get()
-
-    if go.CommandResult() != Rhino.Commands.Result.Success:
+    """Use rs.filter.polysurface (includes Extrusion + Brep), same as other NP scripts."""
+    obj_id = rs.GetObject(
+        "Select host part with recess (closed solid / polysurface)",
+        rs.filter.polysurface,
+        preselect=False,
+    )
+    if not obj_id:
         return None
 
-    return brep_from_obj_ref(go.Object(0))
+    brep = gcu.coerce_brep(obj_id)
+    if brep is None:
+        write_prompt(
+            "Could not read solid from selection. Pick the gray plate (closed solid), not a block instance."
+        )
+    return brep
 
 
 def pick_face_from_point_on_brep(brep):

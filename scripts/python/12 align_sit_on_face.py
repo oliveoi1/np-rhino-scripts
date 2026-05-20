@@ -5,8 +5,8 @@ point on a recess floor face. Translation only (no rotation).
 Flow:
   1. Select objects
   2. Enter = auto bottom-center of bbox, or pick source point (trusted exactly)
-  3. Select target face
-  4. Click target point on face, or Enter = face centroid (projected to plane)
+  3. Select host part, click a point on the recess floor (finds the face)
+  4. Click target placement on that face, or Enter = face centroid (projected to plane)
   5. move_vector = target_on_plane - source_reference
 """
 
@@ -115,25 +115,100 @@ def geometry_filter_for_faces():
     return filt
 
 
-def pick_target_face():
+def write_prompt(msg):
+    try:
+        Rhino.RhinoApp.WriteLine(msg)
+    except Exception:
+        pass
+
+
+def brep_from_obj_ref(obj_ref):
+    if obj_ref is None:
+        return None
+    try:
+        face = obj_ref.Face()
+        if face is not None:
+            return face.Brep
+    except Exception:
+        pass
+    try:
+        geom = obj_ref.Geometry()
+        if geom is None:
+            return None
+        brep = Rhino.Geometry.Brep.TryConvertBrep(geom)
+        if brep:
+            return brep
+    except Exception:
+        pass
+    return None
+
+
+def closest_face_on_brep(brep, test_pt):
+    test_pt = to_point3d(test_pt)
+    best_face = None
+    best_dist = None
+    for i in range(brep.Faces.Count):
+        face = brep.Faces[i]
+        try:
+            rc, u, v = face.ClosestPoint(test_pt)
+            if not rc:
+                continue
+            pt_on = face.PointAt(u, v)
+            dist = test_pt.DistanceTo(pt_on)
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_face = face
+        except Exception:
+            continue
+    return best_face
+
+
+def pick_host_brep():
     go = Rhino.Input.Custom.GetObject()
-    go.SetCommandPrompt("Select recess floor face")
+    go.SetCommandPrompt("Select host part with recess (polysurface)")
     go.GeometryFilter = geometry_filter_for_faces()
-    go.SubObjectSelect = True
+    go.SubObjectSelect = False
     go.EnablePreSelect(False, True)
-    go.DeselectAllBeforePostSelect = False
     go.Get()
 
     if go.CommandResult() != Rhino.Commands.Result.Success:
-        return None, None
+        return None
 
-    obj_ref = go.Object(0)
-    face = obj_ref.Face()
+    return brep_from_obj_ref(go.Object(0))
+
+
+def pick_face_from_point_on_brep(brep):
+    gp = Rhino.Input.Custom.GetPoint()
+    gp.SetCommandPrompt("Click a point on the recess floor inside the pocket")
+    try:
+        gp.Constrain(brep, False)
+    except Exception:
+        pass
+    gp.Get()
+
+    if gp.CommandResult() != Rhino.Commands.Result.Success:
+        return None
+
+    pt = get_getpoint_point(gp)
+    if not pt:
+        return None
+
+    face = closest_face_on_brep(brep, pt)
     if face is None:
-        rs.MessageBox("Please select a face (sub-object selection).")
-        return None, None
+        write_prompt("Could not find a face at that point. Click directly on the pocket floor.")
+    return face
 
-    return face, obj_ref
+
+def pick_target_face():
+    """Host part + click on recess floor (no sub-object face pick required)."""
+    brep = pick_host_brep()
+    if brep is None:
+        return None
+
+    face = pick_face_from_point_on_brep(brep)
+    if face is None:
+        write_prompt("Align Sit On Face cancelled or face not found.")
+    return face
 
 
 def face_plane(face):
@@ -260,7 +335,7 @@ def main():
         if source_ref is None:
             return
 
-        face, _obj_ref = pick_target_face()
+        face = pick_target_face()
         if face is None:
             return
 

@@ -76,12 +76,19 @@ def pick_source_reference(obj_ids):
     return bbox_bottom_center(obj_ids)
 
 
+def geometry_filter_for_faces():
+    """Surface + Brep (polysurfaces are Breps in Rhino; no ObjectType.Polysurface)."""
+    ot = Rhino.DocObjects.ObjectType
+    filt = ot.Surface
+    if hasattr(ot, "Brep"):
+        filt = filt | ot.Brep
+    return filt
+
+
 def pick_target_face():
     go = Rhino.Input.Custom.GetObject()
     go.SetCommandPrompt("Select recess floor face")
-    go.GeometryFilter = (
-        Rhino.DocObjects.ObjectType.Surface | Rhino.DocObjects.ObjectType.Polysurface
-    )
+    go.GeometryFilter = geometry_filter_for_faces()
     go.SubObjectSelect = True
     go.EnablePreSelect(False, True)
     go.DeselectAllBeforePostSelect = False

@@ -84,7 +84,7 @@ def bbox_bottom_center(obj_ids):
 def pick_source_reference(obj_ids):
     gp = Rhino.Input.Custom.GetPoint()
     gp.SetCommandPrompt(
-        "Pick source reference point (Enter for auto bottom-center of selection)"
+        "Pick exact source point to land on target, or press Enter for auto bottom center"
     )
     gp.EnableTransparentCommands(False)
     gp.Get()
@@ -199,53 +199,30 @@ def pick_target_point_on_face(face, plane):
     return project_to_plane(raw, plane)
 
 
-def move_one_object(obj_id, move_vec):
-    if rs.IsObjectLocked(obj_id):
-        return False, "locked"
+def move_selection(obj_ids, move_vec):
+    for obj_id in obj_ids:
+        if rs.IsObjectLocked(obj_id):
+            rs.MessageBox("Selection contains a locked object. Unlock and retry.")
+            return False, 0, []
 
     translation = Rhino.Geometry.Transform.Translation(move_vec)
 
-    if rs.IsBlockInstance(obj_id):
-        rh = rs.coercerhinoobject(obj_id, True, True)
-        if rh is None:
-            return False, "no_object"
-        try:
-            rh.InstanceXform = translation * rh.InstanceXform
-            rh.CommitChanges()
-            return True, "instance"
-        except Exception:
-            pass
+    try:
+        result = rs.TransformObjects(obj_ids, translation, copy=False)
+        if result:
+            return True, len(result), ["transform"]
+    except Exception:
+        pass
 
     try:
         delta = (move_vec.X, move_vec.Y, move_vec.Z)
-        if rs.MoveObject(obj_id, delta):
-            return True, "move"
+        result = rs.MoveObjects(obj_ids, delta)
+        if result:
+            return True, len(result), ["move"]
     except Exception:
         pass
 
-    try:
-        if rs.TransformObject(obj_id, translation, copy=False):
-            return True, "transform"
-    except Exception:
-        pass
-
-    return False, "failed"
-
-
-def move_selection(obj_ids, move_vec):
-    moved = 0
-    methods = []
-    for obj_id in obj_ids:
-        if not rs.IsObject(obj_id):
-            continue
-        ok, method = move_one_object(obj_id, move_vec)
-        if not ok:
-            if method == "locked":
-                rs.MessageBox("Selection contains a locked object. Unlock and retry.")
-            return False, moved, methods
-        moved += 1
-        methods.append(method)
-    return moved > 0, moved, methods
+    return False, 0, ["failed"]
 
 
 def main():
@@ -285,7 +262,7 @@ def main():
         ok, moved_count, methods = move_selection(obj_ids, move_vec)
         if not ok:
             rs.MessageBox(
-                "Move failed. Block instances use InstanceXform; check selection is not locked.",
+                "Move failed. Check selection is not locked and try again.",
                 0,
                 "Align Sit On Face",
             )

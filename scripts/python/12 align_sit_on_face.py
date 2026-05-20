@@ -128,27 +128,6 @@ def write_prompt(msg):
         pass
 
 
-def brep_from_obj_ref(obj_ref):
-    if obj_ref is None:
-        return None
-    try:
-        face = obj_ref.Face()
-        if face is not None:
-            return face.Brep
-    except Exception:
-        pass
-    try:
-        geom = obj_ref.Geometry()
-        if geom is None:
-            return None
-        brep = Rhino.Geometry.Brep.TryConvertBrep(geom)
-        if brep:
-            return brep
-    except Exception:
-        pass
-    return None
-
-
 def closest_face_on_brep(brep, test_pt):
     test_pt = to_point3d(test_pt)
     best_face = None

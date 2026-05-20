@@ -5,7 +5,7 @@ point on a recess floor face. Translation only (no rotation).
 Flow:
   1. Select objects
   2. Enter = auto bottom-center of bbox, or pick source point (trusted exactly)
-  3. Select host part, click a point on the recess floor (finds the face)
+  3. Select host block or solid, click a point on the recess floor (finds the face)
   4. Click target placement on that face, or Enter = face centroid (projected to plane)
   5. move_vector = target_on_plane - source_reference
 """
@@ -148,31 +148,65 @@ def closest_face_on_brep(brep, test_pt):
     return best_face
 
 
-def pick_host_brep():
-    """Use rs.filter.polysurface (includes Extrusion + Brep), same as other NP scripts."""
+def closest_face_on_breps(breps, test_pt):
+    best_face = None
+    best_dist = None
+    for brep in breps:
+        face = closest_face_on_brep(brep, test_pt)
+        if face is None:
+            continue
+        try:
+            rc, u, v = face.ClosestPoint(to_point3d(test_pt))
+            if not rc:
+                continue
+            dist = to_point3d(test_pt).DistanceTo(face.PointAt(u, v))
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_face = face
+        except Exception:
+            continue
+    return best_face
+
+
+def host_selection_filter():
+    """Block instances (host) plus polysurface/extrusion solids."""
+    filt = rs.filter.polysurface
+    try:
+        filt = filt | rs.filter.instance
+    except Exception:
+        try:
+            filt = int(filt) | int(rs.filter.instance)
+        except Exception:
+            pass
+    return filt
+
+
+def pick_host_breps():
     obj_id = rs.GetObject(
-        "Select host part with recess (closed solid / polysurface)",
-        rs.filter.polysurface,
+        "Select host block or solid with recess",
+        host_selection_filter(),
         preselect=False,
     )
     if not obj_id:
         return None
 
-    brep = gcu.coerce_brep(obj_id)
-    if brep is None:
+    breps = gcu.world_breps_from_object(obj_id)
+    if not breps:
         write_prompt(
-            "Could not read solid from selection. Pick the gray plate (closed solid), not a block instance."
+            "No solid geometry in that selection. Use a block or closed solid that contains the pocket."
         )
-    return brep
+    return breps
 
 
-def pick_face_from_point_on_brep(brep):
+def pick_face_from_point_on_breps(breps):
     gp = Rhino.Input.Custom.GetPoint()
     gp.SetCommandPrompt("Click a point on the recess floor inside the pocket")
-    try:
-        gp.Constrain(brep, False)
-    except Exception:
-        pass
+    for brep in breps:
+        try:
+            gp.Constrain(brep, False)
+            break
+        except Exception:
+            continue
     gp.Get()
 
     if gp.CommandResult() != Rhino.Commands.Result.Success:
@@ -182,19 +216,19 @@ def pick_face_from_point_on_brep(brep):
     if not pt:
         return None
 
-    face = closest_face_on_brep(brep, pt)
+    face = closest_face_on_breps(breps, pt)
     if face is None:
         write_prompt("Could not find a face at that point. Click directly on the pocket floor.")
     return face
 
 
 def pick_target_face():
-    """Host part + click on recess floor (no sub-object face pick required)."""
-    brep = pick_host_brep()
-    if brep is None:
+    """Host block/solid + click on recess floor (no sub-object face pick required)."""
+    breps = pick_host_breps()
+    if not breps:
         return None
 
-    face = pick_face_from_point_on_brep(brep)
+    face = pick_face_from_point_on_breps(breps)
     if face is None:
         write_prompt("Align Sit On Face cancelled or face not found.")
     return face

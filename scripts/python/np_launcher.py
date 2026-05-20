@@ -10,7 +10,19 @@ if SHARED_DIR not in sys.path:
     sys.path.insert(0, SHARED_DIR)
 
 try:
+    import importlib
+except ImportError:
+    importlib = None
+
+try:
     import np_deploy
+    try:
+        if importlib and hasattr(importlib, "reload"):
+            np_deploy = importlib.reload(np_deploy)
+        else:
+            reload(np_deploy)  # noqa: F821 — IronPython 2.7
+    except Exception:
+        pass
 except ImportError:
     np_deploy = None
 
@@ -41,6 +53,8 @@ SCRIPT_CHOICES = [
     ("11 - Export Blocks to SketchUp", "11 export_blocks_to_skp.py"),
 ]
 
+FORCE_UPDATE_LABEL = "Force Update"
+
 
 def get_launcher_title():
     version = "unknown"
@@ -65,6 +79,23 @@ def get_launcher_title():
     return "NP Rhino Tools\nVersion: {}\nUpdated: {}".format(version, updated)
 
 
+def run_force_update():
+    if not np_deploy:
+        rs.MessageBox("Update module not available.", 0, "NP Update")
+        return
+    install_root = np_deploy.get_install_root(INSTALL_ROOT)
+    result = np_deploy.check_and_update(install_root, force=True)
+    lines = []
+    if result.get("updated"):
+        lines.append("Update installed successfully.")
+    elif result.get("error"):
+        lines.append("Update failed:")
+        lines.append(result["error"])
+    else:
+        lines.append(result.get("message") or "No changes.")
+    rs.MessageBox("\n".join(lines), 0, "NP Force Update")
+
+
 def run_script_file(script_filename):
     script_dir = os.path.dirname(__file__) if "__file__" in globals() else ""
     script_path = os.path.join(script_dir, script_filename)
@@ -80,8 +111,13 @@ def run_script_file(script_filename):
 def main():
     title = get_launcher_title()
     labels = [label for label, _ in SCRIPT_CHOICES]
+    labels.append(FORCE_UPDATE_LABEL)
     selected = rs.ListBox(labels, title, "NP Launcher")
     if not selected:
+        return
+
+    if selected == FORCE_UPDATE_LABEL:
+        run_force_update()
         return
 
     selected_file = None

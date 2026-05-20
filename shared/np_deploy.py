@@ -1,10 +1,11 @@
 """
 NP Rhino Scripts deployment utilities.
-Works in Rhino Python 3 (Rhino 8) and standalone Python 3 for installers.
+Compatible with Rhino 8 CPython 3 and Rhino IronPython 2.7 (no open(encoding=)).
 """
 
 from __future__ import print_function
 
+import codecs
 import json
 import os
 import platform
@@ -30,6 +31,21 @@ PROTECTED_DIRS = ("_user_data", "_logs", "_temp", "_backup", "_staging")
 RUNTIME_DIRS = PROTECTED_DIRS
 
 DEFAULT_GITHUB_REPO = ""  # Set in _user_data/github_config.json or installers
+
+
+def _io_open(path, mode):
+    """UTF-8 text files; codecs.open works in Rhino IronPython 2.7 and Python 3."""
+    return codecs.open(path, mode, "utf-8")
+
+
+def _read_json(path):
+    with _io_open(path, "r") as handle:
+        return json.load(handle)
+
+
+def _write_json(path, data):
+    with _io_open(path, "w") as handle:
+        json.dump(data, handle, indent=2)
 
 
 def get_user_install_root():
@@ -71,7 +87,7 @@ def log_message(install_root, message, level="INFO"):
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     line = "[{}] [{}] {}\n".format(stamp, level, message)
     try:
-        with open(log_path, "a", encoding="utf-8") as handle:
+        with _io_open(log_path, "a") as handle:
             handle.write(line)
     except Exception:
         pass
@@ -81,8 +97,7 @@ def load_github_config(install_root):
     config_path = os.path.join(install_root, "_user_data", "github_config.json")
     if os.path.isfile(config_path):
         try:
-            with open(config_path, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
+            data = _read_json(config_path)
             if data.get("repo"):
                 return data
         except Exception:
@@ -106,8 +121,7 @@ def save_github_config_example(install_root):
         "note": "Copy to github_config.json and set your repo slug (owner/name).",
     }
     try:
-        with open(example_path, "w", encoding="utf-8") as handle:
-            json.dump(example, handle, indent=2)
+        _write_json(example_path, example)
     except Exception:
         pass
 
@@ -135,8 +149,7 @@ def load_local_manifest(install_root):
     path = os.path.join(install_root, "manifest.json")
     if not os.path.isfile(path):
         return None
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+    return _read_json(path)
 
 
 def parse_version(version_str):
@@ -187,8 +200,7 @@ def load_metadata(install_root):
     if not os.path.isfile(path):
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+        return _read_json(path)
     except Exception:
         return {}
 
@@ -196,8 +208,7 @@ def load_metadata(install_root):
 def save_metadata(install_root, data):
     ensure_runtime_folders(install_root)
     path = metadata_path(install_root)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
+    _write_json(path, data)
 
 
 def should_skip_update(install_root):
@@ -408,7 +419,7 @@ def check_and_update(install_root, force=False):
     ensure_runtime_folders(install_root)
     save_github_config_example(install_root)
 
-    if should_skip_update(install_root):
+    if not force and should_skip_update(install_root):
         result["skipped"] = True
         result["message"] = "Update skipped by user setting"
         return result
@@ -505,8 +516,7 @@ def install_from_zip_url(zip_url, install_root, repo_hint=None):
     ensure_runtime_folders(install_root)
     os.makedirs(install_root, exist_ok=True)
     package_root = download_and_extract_zip(zip_url, install_root)
-    with open(os.path.join(package_root, "manifest.json"), "r", encoding="utf-8") as handle:
-        manifest = json.load(handle)
+    manifest = _read_json(os.path.join(package_root, "manifest.json"))
     ok, err = validate_package_root(package_root, manifest)
     if not ok:
         raise IOError(err)
@@ -521,6 +531,8 @@ def install_from_zip_url(zip_url, install_root, repo_hint=None):
         ensure_runtime_folders(install_root)
         config_path = os.path.join(install_root, "_user_data", "github_config.json")
         if not os.path.isfile(config_path):
-            with open(config_path, "w", encoding="utf-8") as handle:
-                json.dump({"repo": repo_hint, "branch": manifest.get("branch", BRANCH)}, handle, indent=2)
+            _write_json(
+                config_path,
+                {"repo": repo_hint, "branch": manifest.get("branch", BRANCH)},
+            )
     return manifest

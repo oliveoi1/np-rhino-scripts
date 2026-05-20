@@ -48,6 +48,29 @@ def _write_json(path, data):
         json.dump(data, handle, indent=2)
 
 
+def makedirs_safe(path):
+    """Create directory; compatible with Python 2.7 / IronPython (no exist_ok)."""
+    if not path:
+        return
+    if os.path.isdir(path):
+        return
+    try:
+        os.makedirs(path)
+    except OSError:
+        if not os.path.isdir(path):
+            raise
+
+
+def rmtree_safe(path):
+    """Remove directory tree; compatible with Python 2.7 (no ignore_errors on rmtree)."""
+    if not os.path.exists(path):
+        return
+    try:
+        shutil.rmtree(path)
+    except Exception:
+        pass
+
+
 def get_user_install_root():
     """Return the standard user Documents install path for this OS."""
     home = os.path.expanduser("~")
@@ -76,8 +99,7 @@ def get_install_root(script_file=None):
 def ensure_runtime_folders(install_root):
     for name in RUNTIME_DIRS:
         path = os.path.join(install_root, name)
-        if not os.path.isdir(path):
-            os.makedirs(path)
+        makedirs_safe(path)
 
 
 def log_message(install_root, message, level="INFO"):
@@ -280,7 +302,7 @@ def clear_directory(path):
     for name in os.listdir(path):
         full = os.path.join(path, name)
         if os.path.isdir(full):
-            shutil.rmtree(full, ignore_errors=True)
+            rmtree_safe(full)
         else:
             try:
                 os.remove(full)
@@ -293,10 +315,10 @@ def copy_app_item(src_root, dst_root, rel_item):
     dst = os.path.join(dst_root, rel_item)
     if os.path.isdir(src):
         if os.path.exists(dst):
-            shutil.rmtree(dst, ignore_errors=True)
+            rmtree_safe(dst)
         shutil.copytree(src, dst)
     elif os.path.isfile(src):
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        makedirs_safe(os.path.dirname(dst))
         shutil.copy2(src, dst)
     else:
         raise IOError("App item not found: {}".format(rel_item))
@@ -305,7 +327,7 @@ def copy_app_item(src_root, dst_root, rel_item):
 def backup_app_files(install_root, manifest):
     backup_root = os.path.join(install_root, "_backup")
     clear_directory(backup_root)
-    os.makedirs(backup_root, exist_ok=True)
+    makedirs_safe(backup_root)
     for item in get_app_items_from_manifest(manifest):
         src = os.path.join(install_root, item)
         if os.path.exists(src):
@@ -326,7 +348,7 @@ def restore_app_files_from_backup(install_root, manifest):
 def stage_app_files(package_root, install_root, manifest):
     staging_root = os.path.join(install_root, "_staging")
     clear_directory(staging_root)
-    os.makedirs(staging_root, exist_ok=True)
+    makedirs_safe(staging_root)
     for item in get_app_items_from_manifest(manifest):
         copy_app_item(package_root, staging_root, item)
     return staging_root
@@ -342,13 +364,13 @@ def replace_live_app_files(install_root, manifest):
             raise IOError("Staged item missing: {}".format(item))
         try:
             if os.path.isdir(dst):
-                shutil.rmtree(dst, ignore_errors=True)
+                rmtree_safe(dst)
             elif os.path.isfile(dst):
                 os.remove(dst)
             if os.path.isdir(src):
                 shutil.copytree(src, dst)
             else:
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                makedirs_safe(os.path.dirname(dst))
                 shutil.copy2(src, dst)
         except Exception as exc:
             locked.append((item, str(exc)))
@@ -361,14 +383,14 @@ def download_and_extract_zip(zip_url, install_root):
     ensure_runtime_folders(install_root)
     temp_dir = os.path.join(install_root, "_temp")
     clear_directory(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
+    makedirs_safe(temp_dir)
     zip_path = os.path.join(temp_dir, "update.zip")
     log_message(install_root, "Downloading ZIP from {}".format(zip_url))
     data = http_get_bytes(zip_url, timeout=120)
     with open(zip_path, "wb") as handle:
         handle.write(data)
     extract_dir = os.path.join(temp_dir, "extracted")
-    os.makedirs(extract_dir, exist_ok=True)
+    makedirs_safe(extract_dir)
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
     package_root = find_package_root(extract_dir)
@@ -514,7 +536,7 @@ def build_np_alias_command(install_root):
 def install_from_zip_url(zip_url, install_root, repo_hint=None):
     """Used by installers for first-time setup."""
     ensure_runtime_folders(install_root)
-    os.makedirs(install_root, exist_ok=True)
+    makedirs_safe(install_root)
     package_root = download_and_extract_zip(zip_url, install_root)
     manifest = _read_json(os.path.join(package_root, "manifest.json"))
     ok, err = validate_package_root(package_root, manifest)

@@ -20,7 +20,7 @@ try:
         if importlib and hasattr(importlib, "reload"):
             np_deploy = importlib.reload(np_deploy)
         else:
-            reload(np_deploy)  # noqa: F821 — IronPython 2.7
+            reload(np_deploy)  # noqa: F821 - IronPython 2.7
     except Exception:
         pass
 except ImportError:

@@ -5,6 +5,7 @@ Compatible with Rhino 8 CPython 3 and Rhino IronPython 2.7 (no open(encoding=)).
 
 from __future__ import print_function
 
+import base64
 import codecs
 import json
 import os
@@ -154,6 +155,49 @@ def github_urls(repo, branch):
     manifest_url = "https://raw.githubusercontent.com/{}/{}/manifest.json".format(repo, branch)
     zip_url = "https://github.com/{}/archive/refs/heads/{}.zip".format(repo, branch)
     return manifest_url, zip_url
+
+
+def github_api_manifest_url(repo, branch):
+    repo = repo.strip().strip("/")
+    branch = branch or BRANCH
+    return "https://api.github.com/repos/{}/contents/manifest.json?ref={}".format(
+        repo, branch
+    )
+
+
+def fetch_manifest_from_github(repo, branch, install_root=None):
+    """
+    Prefer GitHub API for manifest.json (raw.githubusercontent CDN can lag hours).
+    Falls back to raw URL if the API request fails.
+    """
+    api_err = None
+    try:
+        payload = http_get_json(
+            github_api_manifest_url(repo, branch),
+            timeout=VERSION_CHECK_TIMEOUT_SECONDS,
+        )
+        if isinstance(payload, dict) and payload.get("content"):
+            encoded = payload["content"].replace("\n", "")
+            raw = base64.b64decode(encoded)
+            if install_root:
+                log_message(install_root, "Remote manifest loaded via GitHub API", "INFO")
+            return json.loads(raw.decode("utf-8")), None
+    except Exception as exc:
+        api_err = str(exc)
+
+    manifest_url, _ = github_urls(repo, branch)
+    try:
+        remote = http_get_json(manifest_url, timeout=VERSION_CHECK_TIMEOUT_SECONDS)
+        if install_root:
+            log_message(
+                install_root,
+                "Remote manifest loaded via raw URL (API failed: {})".format(api_err),
+                "WARN",
+            )
+        return remote, None
+    except Exception as exc:
+        err = api_err or str(exc)
+        return None, err
 
 
 def http_get_bytes(url, timeout=30):
@@ -419,12 +463,7 @@ def fetch_remote_manifest(install_root):
     if not repo or "YOUR_GITHUB" in repo:
         return None, "GitHub repo not configured. Edit _user_data/github_config.json"
     branch = config.get("branch") or BRANCH
-    manifest_url, _ = github_urls(repo, branch)
-    try:
-        remote = http_get_json(manifest_url, timeout=VERSION_CHECK_TIMEOUT_SECONDS)
-        return remote, None
-    except Exception as exc:
-        return None, str(exc)
+    return fetch_manifest_from_github(repo, branch, install_root=install_root)
 
 
 def check_and_update(install_root, force=False):

@@ -1,0 +1,16 @@
+{
+  "version": "0.1.0",
+  "branch": "main",
+  "updated": "2026-05-20",
+  "appFolders": [
+    "launcher",
+    "scripts",
+    "shared"
+  ],
+  "requiredFiles": [
+    "scripts/python/np_launcher.py",
+    "run_np_launcher.py",
+    "shared/np_deploy.py",
+    "shared/group_cut_utils.py"
+  ]
+}

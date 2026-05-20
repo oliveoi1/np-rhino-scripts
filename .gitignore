@@ -1,0 +1,11 @@
+.last_launch.json
+_user_data/
+_logs/
+_temp/
+_backup/
+_staging/
+
+.DS_Store
+.specstory/
+.vscode/
+.cursorindexingignore

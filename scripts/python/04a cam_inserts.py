@@ -12,6 +12,10 @@ CIRCLE_MIN_SIZE = 0.65
 CIRCLE_MAX_SIZE = 0.95
 SHORT_LINE_MIN_LEN = 0.2
 SHORT_LINE_MAX_LEN = 1.0
+SLOT_LINE_MIN_LEN = 0.5
+SLOT_LINE_MAX_LEN = 8.0
+SLOT_LINE_MAX_DIST = 1.0
+EDGE_APPROACH_RATIO = 1.25
 CENTER_TO_LINE_END_TOL = 0.08
 TOUCH_TOL = 0.03
 ROUND_RATIO_TOL = 0.18
@@ -141,9 +145,9 @@ def approach_matches_edge(center, pt_on, edge_name):
     dx = abs(px - cx)
     dy = abs(py - cy)
     if edge_name in ("left", "right"):
-        return dx >= dy * 0.55
+        return dx >= dy * EDGE_APPROACH_RATIO
     if edge_name in ("top", "bottom"):
-        return dy >= dx * 0.55
+        return dy >= dx * EDGE_APPROACH_RATIO
     return True
 
 
@@ -265,10 +269,45 @@ def find_short_line_for_circle(center, line_data_list):
 
     return best
 
+
+def slot_line_aim_point(center, all_curve_ids, circle_id):
+    """Long open reference line near hole (e.g. vertical slot centerline)."""
+    best_pt = None
+    best_dist = None
+
+    for cid in all_curve_ids:
+        if cid == circle_id:
+            continue
+        if not rs.IsCurve(cid):
+            continue
+        if rs.IsCurveClosed(cid):
+            continue
+        try:
+            length = rs.CurveLength(cid)
+            if not length or length < SLOT_LINE_MIN_LEN or length > SLOT_LINE_MAX_LEN:
+                continue
+            param = rs.CurveClosestPoint(cid, center)
+            if param is None:
+                continue
+            pt_on = rs.EvaluateCurve(cid, param)
+            if not pt_on:
+                continue
+            d = point_distance(center, pt_on)
+            if d > SLOT_LINE_MAX_DIST:
+                continue
+            if best_dist is None or d < best_dist:
+                best_dist = d
+                best_pt = pt_on
+        except Exception:
+            continue
+
+    return best_pt
+
+
 def nearest_touching_curve_direction(circle_id, center, radius, all_curve_ids):
-    best_curve = None
     best_pt_on_edge = None
     best_dist = 1e9
+    touch_tol = max(TOUCH_TOL, radius * 0.2)
 
     for cid in all_curve_ids:
         if cid == circle_id:
@@ -286,23 +325,21 @@ def nearest_touching_curve_direction(circle_id, center, radius, all_curve_ids):
                 continue
 
             d = rs.Distance(pt_on_edge, center)
-            touch_tol = max(TOUCH_TOL, radius * 0.2)
 
             if abs(d - radius) > touch_tol:
                 continue
 
             if d < best_dist:
                 best_dist = d
-                best_curve = cid
                 best_pt_on_edge = pt_on_edge
 
-        except:
+        except Exception:
             continue
 
-    if not best_curve or not best_pt_on_edge:
-        return None
+    if not best_pt_on_edge:
+        return None, None
 
-    return angle_from_pts(best_pt_on_edge, center)
+    return angle_from_pts(best_pt_on_edge, center), best_pt_on_edge
 
 
 def outward_angle_at_wall_hit(center, cid, param, pt_on, interior_pt):
@@ -395,8 +432,11 @@ def nearest_wall_direction(center, circle_id, all_curve_ids, circle_ids=None):
                 continue
 
     if best_pt is None or best_cid is None:
-        return None
-    return outward_angle_at_wall_hit(center, best_cid, best_param, best_pt, interior_pt)
+        return None, None
+    angle = outward_angle_at_wall_hit(
+        center, best_cid, best_param, best_pt, interior_pt
+    )
+    return angle, best_pt
 
 
 def insert_oriented_block(block_name, insert_pt, angle_deg, layer_name):
@@ -409,49 +449,80 @@ def insert_oriented_block(block_name, insert_pt, angle_deg, layer_name):
     return new_id
 
 def get_symbol_direction(circle_id, center, short_lines, all_curve_ids, circle_ids=None):
+    """
+    Returns (aim_angle, symbol_type, aim_point) where aim_point is the 3d target
+    the caminsert block should face toward.
+    """
+    slot_pt = slot_line_aim_point(center, all_curve_ids, circle_id)
+    if slot_pt is not None:
+        return angle_from_pts(center, slot_pt), "slot_line", slot_pt
+
     short_match = find_short_line_for_circle(center, short_lines)
     if short_match:
         seg, outer_pt = short_match
-        return angle_from_pts(center, outer_pt), "short_line"
+        return angle_from_pts(center, outer_pt), "short_line", outer_pt
 
     info = bbox_info(circle_id)
     if not info:
-        return None, None
+        return None, None, None
 
     radius = (info["width"] + info["height"]) / 4.0
 
-    edge_dir = nearest_touching_curve_direction(circle_id, center, radius, all_curve_ids)
+    edge_dir, edge_pt = nearest_touching_curve_direction(
+        circle_id, center, radius, all_curve_ids
+    )
     if edge_dir is not None:
-        return edge_dir, "edge_touch"
+        return edge_dir, "edge_touch", edge_pt
 
-    wall_dir = nearest_wall_direction(
+    wall_dir, wall_pt = nearest_wall_direction(
         center, circle_id, all_curve_ids, circle_ids=circle_ids
     )
     if wall_dir is not None:
-        return wall_dir, "nearest_wall"
+        return wall_dir, "nearest_wall", wall_pt
 
-    return None, None
-
-
-def angle_diff_deg(a, b):
-    return abs((a - b + 180.0) % 360.0 - 180.0)
+    return None, None, None
 
 
-def final_cam_angle(base_dir, symbol_type, center=None, all_curve_ids=None, circle_ids=None):
+def facing_vector(rotation_deg, block_offset_deg):
+    rad = math.radians(rotation_deg + block_offset_deg)
+    return (math.cos(rad), math.sin(rad))
+
+
+def pick_rotation_toward_target(center, aim_angle, aim_point):
     """
-    Pick rotation so the caminsert block faces outward (toward wall / leader).
-    Tries offset and offset+180; keeps whichever aligns with the outward aim angle.
+    Try rotation and rotation+180 (with/without block offset) so the block
+    faces toward aim_point, not just matching angle numbers.
     """
+    if aim_point is None:
+        return normalize_angle(aim_angle + BLOCK_ANGLE_OFFSET)
+
+    cx, cy = xy_tuple(center)
+    tx, ty = xy_tuple(aim_point)
+    vx = tx - cx
+    vy = ty - cy
+    vlen = math.hypot(vx, vy)
+    if vlen < 1e-9:
+        return normalize_angle(aim_angle + BLOCK_ANGLE_OFFSET)
+
+    best_rot = None
+    best_dot = None
+    for rot in (normalize_angle(aim_angle), normalize_angle(aim_angle + 180.0)):
+        for offset in (0.0, BLOCK_ANGLE_OFFSET):
+            fx, fy = facing_vector(rot, offset)
+            dot = fx * vx + fy * vy
+            if best_dot is None or dot > best_dot:
+                best_dot = dot
+                best_rot = rot
+
+    return normalize_angle(best_rot)
+
+
+def final_cam_angle(base_dir, symbol_type, center=None, aim_point=None, **kwargs):
     if symbol_type == "edge_touch":
-        outward = normalize_angle(base_dir + 180.0)
+        aim_angle = normalize_angle(base_dir + 180.0)
     else:
-        outward = normalize_angle(base_dir)
-
-    a0 = normalize_angle(outward + BLOCK_ANGLE_OFFSET)
-    a1 = normalize_angle(outward + BLOCK_ANGLE_OFFSET + 180.0)
-    if angle_diff_deg(a0, outward) <= angle_diff_deg(a1, outward):
-        return a0
-    return a1
+        aim_angle = normalize_angle(base_dir)
+    return pick_rotation_toward_target(center, aim_angle, aim_point)
 
 def main():
     ensure_layer(TARGET_LAYER)
@@ -508,7 +579,7 @@ def main():
     rs.EnableRedraw(False)
 
     for circle_id, center in circles:
-        base_dir, symbol_type = get_symbol_direction(
+        base_dir, symbol_type, aim_point = get_symbol_direction(
             circle_id, center, short_lines, all_curves, circle_ids=circle_ids
         )
         if base_dir is None:
@@ -519,8 +590,7 @@ def main():
             base_dir,
             symbol_type,
             center=center,
-            all_curve_ids=all_curves,
-            circle_ids=circle_ids,
+            aim_point=aim_point,
         )
 
         new_id = insert_oriented_block(BLOCK_NAME, center, final_angle, TARGET_LAYER)

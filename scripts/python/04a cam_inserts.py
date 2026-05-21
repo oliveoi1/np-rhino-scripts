@@ -16,6 +16,8 @@ CENTER_TO_LINE_END_TOL = 0.08
 TOUCH_TOL = 0.03
 ROUND_RATIO_TOL = 0.18
 CIRCUMFERENCE_TOL = 0.15
+FACE_PERP_WEIGHT = 12.0
+MAX_FACE_PERP = 0.75
 
 BLOCK_ANGLE_OFFSET = 180.0
 DELETE_SOURCE = False
@@ -52,6 +54,109 @@ def angle_from_pts(p0, p1):
 
 def point_distance(a, b):
     return rs.Distance(a, b)
+
+
+def point_xyz(pt):
+    if pt is None:
+        return None
+    if hasattr(pt, "X"):
+        return (pt.X, pt.Y, pt.Z)
+    return (pt[0], pt[1], pt[2])
+
+
+def xy_tuple(pt):
+    x, y, _z = point_xyz(pt)
+    return (x, y)
+
+
+def unit_xy(vec):
+    x, y = vec[0], vec[1]
+    length = math.hypot(x, y)
+    if length < 1e-12:
+        return None
+    return (x / length, y / length)
+
+
+def perpendicularity(approach_xy, tangent_xy):
+    a = unit_xy(approach_xy)
+    t = unit_xy(tangent_xy)
+    if not a or not t:
+        return 1.0
+    return abs(a[0] * t[0] + a[1] * t[1])
+
+
+def pocket_outline_bbox(all_curve_ids, circle_ids):
+    minx = miny = 1e9
+    maxx = maxy = -1e9
+    found = False
+    circle_set = set(circle_ids or [])
+    for cid in all_curve_ids:
+        if cid in circle_set:
+            continue
+        if not rs.IsCurve(cid):
+            continue
+        bb = rs.BoundingBox(cid)
+        if not bb:
+            continue
+        for p in bb:
+            px, py, _pz = point_xyz(p)
+            minx = min(minx, px)
+            maxx = max(maxx, px)
+            miny = min(miny, py)
+            maxy = max(maxy, py)
+            found = True
+    if not found:
+        return None
+    return (minx, maxx, miny, maxy)
+
+
+def dominant_open_edge(center, bbox):
+    """Which pocket bbox edge the hole sits nearest (top/bottom/left/right)."""
+    if not bbox:
+        return None
+    minx, maxx, miny, maxy = bbox
+    cx, cy = xy_tuple(center)
+    dists = {
+        "left": cx - minx,
+        "right": maxx - cx,
+        "bottom": cy - miny,
+        "top": maxy - cy,
+    }
+    return min(dists, key=dists.get)
+
+
+def approach_matches_edge(center, pt_on, edge_name):
+    """Prefer wall hits square to the nearest bbox side (e.g. vertical face on right edge)."""
+    if not edge_name:
+        return True
+    cx, cy = xy_tuple(center)
+    px, py = xy_tuple(pt_on)
+    dx = abs(px - cx)
+    dy = abs(py - cy)
+    if edge_name in ("left", "right"):
+        return dx >= dy * 0.55
+    if edge_name in ("top", "bottom"):
+        return dy >= dx * 0.55
+    return True
+
+
+def curve_tangent_xy(cid, param):
+    try:
+        tan = rs.CurveTangent(cid, param)
+        if tan:
+            return xy_tuple(tan)
+    except Exception:
+        pass
+    try:
+        start = rs.CurveStartPoint(cid)
+        end = rs.CurveEndPoint(cid)
+        if start and end:
+            sx, sy, _sz = point_xyz(start)
+            ex, ey, _ez = point_xyz(end)
+            return (ex - sx, ey - sy)
+    except Exception:
+        pass
+    return None
 
 
 def closure_tolerance():
@@ -193,10 +298,15 @@ def nearest_touching_curve_direction(circle_id, center, radius, all_curve_ids):
     return angle_from_pts(best_pt_on_edge, center)
 
 
-def nearest_wall_direction(center, circle_id, all_curve_ids):
-    """Fallback: aim toward closest point on any other curve (e.g. pocket outline)."""
+def nearest_wall_direction(center, circle_id, all_curve_ids, circle_ids=None):
+    """
+    Aim toward the pocket wall face the hole sits on.
+    Prefer face-on hits (not corners) and the bbox side nearest the hole.
+    """
     best_pt = None
-    best_dist = None
+    best_score = None
+    bbox = pocket_outline_bbox(all_curve_ids, circle_ids)
+    edge_name = dominant_open_edge(center, bbox)
 
     for cid in all_curve_ids:
         if cid == circle_id:
@@ -213,11 +323,45 @@ def nearest_wall_direction(center, circle_id, all_curve_ids):
             d = point_distance(center, pt_on)
             if d < 1e-6:
                 continue
-            if best_dist is None or d < best_dist:
-                best_dist = d
+
+            cx, cy = xy_tuple(center)
+            px, py = xy_tuple(pt_on)
+            approach_xy = (px - cx, py - cy)
+            tangent_xy = curve_tangent_xy(cid, param)
+            perp = perpendicularity(approach_xy, tangent_xy)
+            if perp > MAX_FACE_PERP:
+                continue
+            if not approach_matches_edge(center, pt_on, edge_name):
+                continue
+
+            score = d * (1.0 + FACE_PERP_WEIGHT * perp * perp)
+            if best_score is None or score < best_score:
+                best_score = score
                 best_pt = pt_on
         except Exception:
             continue
+
+    if best_pt is None:
+        for cid in all_curve_ids:
+            if cid == circle_id:
+                continue
+            if not rs.IsCurve(cid):
+                continue
+            try:
+                param = rs.CurveClosestPoint(cid, center)
+                if param is None:
+                    continue
+                pt_on = rs.EvaluateCurve(cid, param)
+                if not pt_on:
+                    continue
+                d = point_distance(center, pt_on)
+                if d < 1e-6:
+                    continue
+                if best_score is None or d < best_score:
+                    best_score = d
+                    best_pt = pt_on
+            except Exception:
+                continue
 
     if best_pt is None:
         return None
@@ -233,7 +377,7 @@ def insert_oriented_block(block_name, insert_pt, angle_deg, layer_name):
     rs.ObjectLayer(new_id, layer_name)
     return new_id
 
-def get_symbol_direction(circle_id, center, short_lines, all_curve_ids):
+def get_symbol_direction(circle_id, center, short_lines, all_curve_ids, circle_ids=None):
     short_match = find_short_line_for_circle(center, short_lines)
     if short_match:
         seg, outer_pt = short_match
@@ -249,7 +393,9 @@ def get_symbol_direction(circle_id, center, short_lines, all_curve_ids):
     if edge_dir is not None:
         return edge_dir, "edge_touch"
 
-    wall_dir = nearest_wall_direction(center, circle_id, all_curve_ids)
+    wall_dir = nearest_wall_direction(
+        center, circle_id, all_curve_ids, circle_ids=circle_ids
+    )
     if wall_dir is not None:
         return wall_dir, "nearest_wall"
 
@@ -318,11 +464,14 @@ def main():
 
     placed = 0
     skipped = 0
+    circle_ids = [cid for cid, _center in circles]
 
     rs.EnableRedraw(False)
 
     for circle_id, center in circles:
-        base_dir, symbol_type = get_symbol_direction(circle_id, center, short_lines, all_curves)
+        base_dir, symbol_type = get_symbol_direction(
+            circle_id, center, short_lines, all_curves, circle_ids=circle_ids
+        )
         if base_dir is None:
             skipped += 1
             continue

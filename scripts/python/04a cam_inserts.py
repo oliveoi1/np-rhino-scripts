@@ -314,7 +314,9 @@ def main():
             skipped += 1
             continue
 
-        extra_offset = 180.0 if symbol_type in ("edge_touch", "nearest_wall") else 0.0
+        # nearest_wall: base_dir is center->outline; BLOCK_ANGLE_OFFSET flips to cam facing.
+        # edge_touch: base_dir is outline->center; add 180 so it matches short_line logic.
+        extra_offset = 180.0 if symbol_type == "edge_touch" else 0.0
         final_angle = normalize_angle(base_dir + BLOCK_ANGLE_OFFSET + extra_offset)
 
         new_id = insert_oriented_block(BLOCK_NAME, center, final_angle, TARGET_LAYER)

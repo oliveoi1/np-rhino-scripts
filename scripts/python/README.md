@@ -25,6 +25,7 @@ Current scripts in this folder:
 - `08b create_block.py`
 - `09 plan view.py`
 - `10 logo_cut.py`
+- `12 zero_sku_insertion_z.py`
 
 ## Notes
 

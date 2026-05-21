@@ -402,13 +402,17 @@ def get_symbol_direction(circle_id, center, short_lines, all_curve_ids, circle_i
     return None, None
 
 
-def final_cam_angle(base_dir, symbol_type):
+def final_cam_angle(base_dir, symbol_type, center=None, all_curve_ids=None, circle_ids=None):
     """
-    short_line / nearest_wall: base_dir points from hole center toward opening.
-    edge_touch: base_dir points from outline toward center; flip once first.
-    BLOCK_ANGLE_OFFSET applies only to leader-based picks (short_line).
+    short_line: center->leader; +BLOCK_ANGLE_OFFSET.
+    nearest_wall: center->wall; top/bottom edges need no offset, left/right need 180.
+    edge_touch: outline->center; flip once to point outward.
     """
     if symbol_type == "nearest_wall":
+        bbox = pocket_outline_bbox(all_curve_ids, circle_ids)
+        edge = dominant_open_edge(center, bbox)
+        if edge in ("left", "right"):
+            return normalize_angle(base_dir + BLOCK_ANGLE_OFFSET)
         return normalize_angle(base_dir)
     if symbol_type == "edge_touch":
         return normalize_angle(base_dir + 180.0)
@@ -476,7 +480,13 @@ def main():
             skipped += 1
             continue
 
-        final_angle = final_cam_angle(base_dir, symbol_type)
+        final_angle = final_cam_angle(
+            base_dir,
+            symbol_type,
+            center=center,
+            all_curve_ids=all_curves,
+            circle_ids=circle_ids,
+        )
 
         new_id = insert_oriented_block(BLOCK_NAME, center, final_angle, TARGET_LAYER)
         if new_id:

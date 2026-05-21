@@ -1,5 +1,9 @@
-import rhinoscriptsyntax as rs
+from __future__ import print_function
+
 import math
+
+import rhinoscriptsyntax as rs
+import scriptcontext as sc
 
 BLOCK_NAME = "caminsert"
 TARGET_LAYER = "NP-Construction - Setout"
@@ -49,42 +53,59 @@ def angle_from_pts(p0, p1):
 def point_distance(a, b):
     return rs.Distance(a, b)
 
+
+def closure_tolerance():
+    tol = sc.doc.ModelAbsoluteTolerance if sc.doc else 0.01
+    return max(tol * 100.0, 1e-4)
+
+
+def is_effectively_closed(obj_id):
+    """PolyCurves from arcs often have micro-gaps but are geometrically closed."""
+    if rs.IsCurveClosed(obj_id):
+        return True
+    start = rs.CurveStartPoint(obj_id)
+    end = rs.CurveEndPoint(obj_id)
+    if not start or not end:
+        return False
+    return point_distance(start, end) <= closure_tolerance()
+
+
 def is_round_closed_curve(obj_id):
     if not rs.IsCurve(obj_id):
-        return False, None
+        return False, None, "not_curve"
 
-    if not rs.IsCurveClosed(obj_id):
-        return False, None
+    if not is_effectively_closed(obj_id):
+        return False, None, "not_closed"
 
     info = bbox_info(obj_id)
     if not info:
-        return False, None
+        return False, None, "no_bbox"
 
     w = info["width"]
     h = info["height"]
 
     if w < CIRCLE_MIN_SIZE or h < CIRCLE_MIN_SIZE:
-        return False, None
+        return False, None, "too_small"
 
     if w > CIRCLE_MAX_SIZE or h > CIRCLE_MAX_SIZE:
-        return False, None
+        return False, None, "too_large"
 
     ratio = w / h if h != 0 else 999999
     if ratio < (1.0 - ROUND_RATIO_TOL) or ratio > (1.0 + ROUND_RATIO_TOL):
-        return False, None
+        return False, None, "not_round"
 
     avg_dia = (w + h) / 2.0
     expected = math.pi * avg_dia
     actual = rs.CurveLength(obj_id)
 
     if not actual or expected == 0:
-        return False, None
+        return False, None, "no_length"
 
     lr = actual / expected
     if lr < (1.0 - CIRCUMFERENCE_TOL) or lr > (1.0 + CIRCUMFERENCE_TOL):
-        return False, None
+        return False, None, "bad_circumference"
 
-    return True, info["center"]
+    return True, info["center"], None
 
 def get_short_line_data(obj_id):
     if not rs.IsCurve(obj_id):
@@ -153,8 +174,9 @@ def nearest_touching_curve_direction(circle_id, center, radius, all_curve_ids):
                 continue
 
             d = rs.Distance(pt_on_edge, center)
+            touch_tol = max(TOUCH_TOL, radius * 0.2)
 
-            if abs(d - radius) > TOUCH_TOL:
+            if abs(d - radius) > touch_tol:
                 continue
 
             if d < best_dist:
@@ -169,6 +191,38 @@ def nearest_touching_curve_direction(circle_id, center, radius, all_curve_ids):
         return None
 
     return angle_from_pts(best_pt_on_edge, center)
+
+
+def nearest_wall_direction(center, circle_id, all_curve_ids):
+    """Fallback: aim toward closest point on any other curve (e.g. pocket outline)."""
+    best_pt = None
+    best_dist = None
+
+    for cid in all_curve_ids:
+        if cid == circle_id:
+            continue
+        if not rs.IsCurve(cid):
+            continue
+        try:
+            param = rs.CurveClosestPoint(cid, center)
+            if param is None:
+                continue
+            pt_on = rs.EvaluateCurve(cid, param)
+            if not pt_on:
+                continue
+            d = point_distance(center, pt_on)
+            if d < 1e-6:
+                continue
+            if best_dist is None or d < best_dist:
+                best_dist = d
+                best_pt = pt_on
+        except Exception:
+            continue
+
+    if best_pt is None:
+        return None
+    return angle_from_pts(center, best_pt)
+
 
 def insert_oriented_block(block_name, insert_pt, angle_deg, layer_name):
     new_id = rs.InsertBlock(block_name, insert_pt)
@@ -195,6 +249,10 @@ def get_symbol_direction(circle_id, center, short_lines, all_curve_ids):
     if edge_dir is not None:
         return edge_dir, "edge_touch"
 
+    wall_dir = nearest_wall_direction(center, circle_id, all_curve_ids)
+    if wall_dir is not None:
+        return wall_dir, "nearest_wall"
+
     return None, None
 
 def main():
@@ -204,30 +262,45 @@ def main():
         rs.MessageBox("Block '{}' not found.".format(BLOCK_NAME))
         return
 
-    rs.UnselectAllObjects()
-    objs = rs.GetObjects("Select curves to scan", rs.filter.curve, preselect=False)
+    objs = rs.GetObjects(
+        "Select cam circles and pocket outline curves",
+        rs.filter.curve,
+        preselect=True,
+    )
     if not objs:
         return
 
     circles = []
     short_lines = []
     all_curves = []
+    reject_counts = {}
 
     for obj in objs:
         if rs.IsCurve(obj):
             all_curves.append(obj)
 
-        ok, center = is_round_closed_curve(obj)
+        ok, center, reason = is_round_closed_curve(obj)
         if ok:
             circles.append((obj, center))
             continue
+
+        if reason:
+            reject_counts[reason] = reject_counts.get(reason, 0) + 1
 
         line_data = get_short_line_data(obj)
         if line_data:
             short_lines.append(line_data)
 
     if not circles:
-        rs.MessageBox("No valid cam circles found.")
+        detail = ""
+        if reject_counts:
+            parts = ["{}: {}".format(k, v) for k, v in sorted(reject_counts.items())]
+            detail = "\nRejected:\n" + "\n".join(parts)
+        rs.MessageBox(
+            "No valid cam circles found.\n"
+            "Need closed round loops (~0.65-0.95 wide) plus outline curves."
+            + detail
+        )
         return
 
     placed = 0
@@ -241,7 +314,7 @@ def main():
             skipped += 1
             continue
 
-        extra_offset = 180.0 if symbol_type == "edge_touch" else 0.0
+        extra_offset = 180.0 if symbol_type in ("edge_touch", "nearest_wall") else 0.0
         final_angle = normalize_angle(base_dir + BLOCK_ANGLE_OFFSET + extra_offset)
 
         new_id = insert_oriented_block(BLOCK_NAME, center, final_angle, TARGET_LAYER)

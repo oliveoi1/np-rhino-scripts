@@ -13,60 +13,6 @@ def coerce_brep(obj_id):
         return None
 
 
-def world_breps_from_object(obj_id):
-    """
-    Breps in world coordinates for a solid or block instance (duplicated).
-    Block definitions are transformed by the instance xform.
-    """
-    rh = rs.coercerhinoobject(obj_id, True, True)
-    if rh is None:
-        return []
-
-    breps = []
-    try:
-        if rs.IsBlockInstance(obj_id):
-            idef = rh.InstanceDefinition
-            if idef is None:
-                return []
-            xform = rh.InstanceXform
-            if hasattr(idef, "GetObjectCount"):
-                count = idef.GetObjectCount()
-            else:
-                count = idef.ObjectCount
-            for i in range(count):
-                if hasattr(idef, "GetObject"):
-                    robj = idef.GetObject(i)
-                else:
-                    objs = idef.GetObjects()
-                    robj = objs[i] if objs and i < len(objs) else None
-                if robj is None:
-                    continue
-                geo = robj.Geometry
-                if geo is None:
-                    continue
-                brep = Rhino.Geometry.Brep.TryConvertBrep(geo)
-                if brep is None:
-                    continue
-                dup = brep.DuplicateBrep()
-                dup.Transform(xform)
-                if dup and dup.IsValid:
-                    breps.append(dup)
-            return breps
-    except Exception:
-        pass
-
-    brep = coerce_brep(obj_id)
-    if brep is None:
-        return []
-    try:
-        dup = brep.DuplicateBrep()
-    except Exception:
-        dup = brep
-    if dup and dup.IsValid:
-        breps.append(dup)
-    return breps
-
-
 def replace_extrusion_with_brep_if_needed(obj_id):
     """
     ExtrudeCrv often creates Extrusion objects; Brep.CreateBooleanDifference is unreliable

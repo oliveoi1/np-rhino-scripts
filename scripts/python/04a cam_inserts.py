@@ -255,6 +255,19 @@ def get_symbol_direction(circle_id, center, short_lines, all_curve_ids):
 
     return None, None
 
+
+def final_cam_angle(base_dir, symbol_type):
+    """
+    short_line / nearest_wall: base_dir points from hole center toward opening.
+    edge_touch: base_dir points from outline toward center; flip once first.
+    BLOCK_ANGLE_OFFSET applies only to leader-based picks (short_line).
+    """
+    if symbol_type == "nearest_wall":
+        return normalize_angle(base_dir)
+    if symbol_type == "edge_touch":
+        return normalize_angle(base_dir + 180.0)
+    return normalize_angle(base_dir + BLOCK_ANGLE_OFFSET)
+
 def main():
     ensure_layer(TARGET_LAYER)
 
@@ -314,10 +327,7 @@ def main():
             skipped += 1
             continue
 
-        # nearest_wall: base_dir is center->outline; BLOCK_ANGLE_OFFSET flips to cam facing.
-        # edge_touch: base_dir is outline->center; add 180 so it matches short_line logic.
-        extra_offset = 180.0 if symbol_type == "edge_touch" else 0.0
-        final_angle = normalize_angle(base_dir + BLOCK_ANGLE_OFFSET + extra_offset)
+        final_angle = final_cam_angle(base_dir, symbol_type)
 
         new_id = insert_oriented_block(BLOCK_NAME, center, final_angle, TARGET_LAYER)
         if new_id:

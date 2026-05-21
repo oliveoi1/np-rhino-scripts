@@ -125,6 +125,13 @@ def dominant_open_edge(center, bbox):
     return min(dists, key=dists.get)
 
 
+def pocket_interior_point(bbox):
+    if not bbox:
+        return None
+    minx, maxx, miny, maxy = bbox
+    return ((minx + maxx) / 2.0, (miny + maxy) / 2.0, 0.0)
+
+
 def approach_matches_edge(center, pt_on, edge_name):
     """Prefer wall hits square to the nearest bbox side (e.g. vertical face on right edge)."""
     if not edge_name:
@@ -298,15 +305,61 @@ def nearest_touching_curve_direction(circle_id, center, radius, all_curve_ids):
     return angle_from_pts(best_pt_on_edge, center)
 
 
+def outward_angle_at_wall_hit(center, cid, param, pt_on, interior_pt):
+    """Face normal pointing out of the pocket; works on slanted edges."""
+    cx, cy = xy_tuple(center)
+    px, py = xy_tuple(pt_on)
+    to_wall = (px - cx, py - cy)
+
+    tangent_xy = curve_tangent_xy(cid, param)
+    t = unit_xy(tangent_xy)
+    if t and interior_pt:
+        n1 = (-t[1], t[0])
+        n2 = (t[1], -t[0])
+        ix, iy = xy_tuple(interior_pt)
+        ext = (px - ix, py - iy)
+        if n1[0] * ext[0] + n1[1] * ext[1] >= n2[0] * ext[0] + n2[1] * ext[1]:
+            n = n1
+        else:
+            n = n2
+        if n[0] * to_wall[0] + n[1] * to_wall[1] < 0:
+            n = (-n[0], -n[1])
+        return math.degrees(math.atan2(n[1], n[0]))
+
+    return angle_from_pts(center, pt_on)
+
+
 def nearest_wall_direction(center, circle_id, all_curve_ids, circle_ids=None):
     """
-    Aim toward the pocket wall face the hole sits on.
-    Prefer face-on hits (not corners) and the bbox side nearest the hole.
+    Aim along the outward face normal at the pocket wall nearest the hole.
     """
     best_pt = None
+    best_cid = None
+    best_param = None
     best_score = None
     bbox = pocket_outline_bbox(all_curve_ids, circle_ids)
     edge_name = dominant_open_edge(center, bbox)
+    interior_pt = pocket_interior_point(bbox)
+
+    def consider_hit(cid, param, pt_on, max_perp):
+        d = point_distance(center, pt_on)
+        if d < 1e-6:
+            return
+        cx, cy = xy_tuple(center)
+        px, py = xy_tuple(pt_on)
+        approach_xy = (px - cx, py - cy)
+        tangent_xy = curve_tangent_xy(cid, param)
+        perp = perpendicularity(approach_xy, tangent_xy)
+        if perp > max_perp:
+            return
+        if not approach_matches_edge(center, pt_on, edge_name):
+            return
+        score = d * (1.0 + FACE_PERP_WEIGHT * perp * perp)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_pt = pt_on
+            best_cid = cid
+            best_param = param
 
     for cid in all_curve_ids:
         if cid == circle_id:
@@ -320,24 +373,7 @@ def nearest_wall_direction(center, circle_id, all_curve_ids, circle_ids=None):
             pt_on = rs.EvaluateCurve(cid, param)
             if not pt_on:
                 continue
-            d = point_distance(center, pt_on)
-            if d < 1e-6:
-                continue
-
-            cx, cy = xy_tuple(center)
-            px, py = xy_tuple(pt_on)
-            approach_xy = (px - cx, py - cy)
-            tangent_xy = curve_tangent_xy(cid, param)
-            perp = perpendicularity(approach_xy, tangent_xy)
-            if perp > MAX_FACE_PERP:
-                continue
-            if not approach_matches_edge(center, pt_on, edge_name):
-                continue
-
-            score = d * (1.0 + FACE_PERP_WEIGHT * perp * perp)
-            if best_score is None or score < best_score:
-                best_score = score
-                best_pt = pt_on
+            consider_hit(cid, param, pt_on, MAX_FACE_PERP)
         except Exception:
             continue
 
@@ -354,18 +390,13 @@ def nearest_wall_direction(center, circle_id, all_curve_ids, circle_ids=None):
                 pt_on = rs.EvaluateCurve(cid, param)
                 if not pt_on:
                     continue
-                d = point_distance(center, pt_on)
-                if d < 1e-6:
-                    continue
-                if best_score is None or d < best_score:
-                    best_score = d
-                    best_pt = pt_on
+                consider_hit(cid, param, pt_on, 0.95)
             except Exception:
                 continue
 
-    if best_pt is None:
+    if best_pt is None or best_cid is None:
         return None
-    return angle_from_pts(center, best_pt)
+    return outward_angle_at_wall_hit(center, best_cid, best_param, best_pt, interior_pt)
 
 
 def insert_oriented_block(block_name, insert_pt, angle_deg, layer_name):
@@ -402,21 +433,25 @@ def get_symbol_direction(circle_id, center, short_lines, all_curve_ids, circle_i
     return None, None
 
 
+def angle_diff_deg(a, b):
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
 def final_cam_angle(base_dir, symbol_type, center=None, all_curve_ids=None, circle_ids=None):
     """
-    short_line: center->leader; +BLOCK_ANGLE_OFFSET.
-    nearest_wall: center->wall; top/bottom edges need no offset, left/right need 180.
-    edge_touch: outline->center; flip once to point outward.
+    Pick rotation so the caminsert block faces outward (toward wall / leader).
+    Tries offset and offset+180; keeps whichever aligns with the outward aim angle.
     """
-    if symbol_type == "nearest_wall":
-        bbox = pocket_outline_bbox(all_curve_ids, circle_ids)
-        edge = dominant_open_edge(center, bbox)
-        if edge in ("left", "right"):
-            return normalize_angle(base_dir + BLOCK_ANGLE_OFFSET)
-        return normalize_angle(base_dir)
     if symbol_type == "edge_touch":
-        return normalize_angle(base_dir + 180.0)
-    return normalize_angle(base_dir + BLOCK_ANGLE_OFFSET)
+        outward = normalize_angle(base_dir + 180.0)
+    else:
+        outward = normalize_angle(base_dir)
+
+    a0 = normalize_angle(outward + BLOCK_ANGLE_OFFSET)
+    a1 = normalize_angle(outward + BLOCK_ANGLE_OFFSET + 180.0)
+    if angle_diff_deg(a0, outward) <= angle_diff_deg(a1, outward):
+        return a0
+    return a1
 
 def main():
     ensure_layer(TARGET_LAYER)

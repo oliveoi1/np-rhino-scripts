@@ -45,6 +45,7 @@ SCRIPT_CHOICES = [
     ("06b - Castor Small Insert + Holes", "06b castor_(SM)_insert_+_holes.py"),
     ("06b - Castor Large Insert + Holes", "06b castor_(LG)_insert_+_holes.py"),
     ("07 - Glides", "07 Glides.py"),
+    ("Insert Block", "15 insert_block.py"),
     ("08a - Create Block 1st", "08a create_block 1st.py"),
     ("08a - Create Block 1st Copy", "08a create_block 1st copy.py"),
     ("08b - Create Block", "08b create_block.py"),

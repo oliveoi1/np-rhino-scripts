@@ -20,6 +20,7 @@ Current scripts in this folder:
 - `06b castor_(LG)_insert_+_holes.py`
 - `06b castor_(SM)_insert_+_holes.py`
 - `07 Glides.py`
+- `15 insert_block.py`
 - `08a create_block 1st.py`
 - `08a create_block 1st copy.py`
 - `08b create_block.py`

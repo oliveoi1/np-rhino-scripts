@@ -1,11 +1,12 @@
 {
-  "version": "0.1.22",
+  "version": "0.1.34",
   "branch": "main",
-  "updated": "2026-05-20",
+  "updated": "2026-10-28",
   "appFolders": [
     "launcher",
     "scripts",
-    "shared"
+    "shared",
+    "blocks"
   ],
   "requiredFiles": [
     "scripts/python/np_launcher.py",

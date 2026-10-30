@@ -27,6 +27,33 @@ def _message(text, title="NP Rhino Tools"):
         print("{}: {}".format(title, text))
 
 
+def ensure_material_search_path(install_root):
+    """Register materials/ so Rhino can find the shared textures on Windows and Mac."""
+    folder = os.path.abspath(os.path.join(install_root, "materials"))
+    if not os.path.isdir(folder):
+        return
+    try:
+        import Rhino
+    except Exception:
+        return
+
+    settings = Rhino.ApplicationSettings.FileSettings
+    try:
+        existing = settings.GetSearchPaths() or []
+    except Exception:
+        existing = []
+
+    for path in existing:
+        if path and os.path.normcase(os.path.abspath(path)) == os.path.normcase(folder):
+            return
+
+    try:
+        settings.AddSearchPath(folder, -1)
+        np_deploy.log_message(install_root, "Added material search path: {}".format(folder))
+    except Exception:
+        np_deploy.log_message(install_root, traceback.format_exc(), "ERROR")
+
+
 def launch_np_launcher(install_root):
     launcher_path = os.path.join(install_root, "scripts", "python", "np_launcher.py")
     if not os.path.isfile(launcher_path):
@@ -53,6 +80,8 @@ def main():
             np_deploy.log_message(install_root, "Update applied: " + update_result.get("message", ""))
     except Exception:
         np_deploy.log_message(install_root, traceback.format_exc(), "ERROR")
+
+    ensure_material_search_path(install_root)
 
     local_manifest = np_deploy.load_local_manifest(install_root) or {}
     launch_ok = False

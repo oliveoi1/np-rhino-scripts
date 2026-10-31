@@ -1,9 +1,9 @@
 """
-Make a third-angle 2D drawing of each chosen snapshot and export it.
+Make a 2D drawing of the view stored in each chosen snapshot and export it.
 
-Uses the same Make2D settings as the 2-D Drawing Options dialog:
-third-angle projection, properties from the input objects, tangent edges,
-scene silhouettes, no hidden lines, grouped output, layer name "2d".
+Uses Make2D with Projection set to View, so only the snapshot's current
+view is drawn. Properties come from the input objects, with tangent edges,
+scene silhouettes, no hidden lines, grouped output, and layer name "2d".
 The 2D curves are removed from the model after each file is written.
 """
 
@@ -86,15 +86,17 @@ def object_ids():
 
 
 def run_make2d():
-    # Matches the 2-D Drawing Options dialog. Third angle ignores the
-    # viewport camera and draws World Top, Front, and Right.
+    # Projection=View draws only the active view. Restoring the snapshot
+    # first makes that view the one on screen.
     script = " ".join([
         "_-Make2D",
-        "_Layout=_ThirdAngle",
+        "_Layout=_View",
         "_Properties=_FromInputObjects",
         "_ShowTangents=_Yes",
         "_CreateHiddenLines=_No",
         "_CreateSceneSilhouette=_Yes",
+        "_CreateClippingPlaneIntersections=_No",
+        "_ShowViewRectangle=_No",
         "_GroupOutput=_Yes",
         '_LayerName "{}"'.format(LAYER_NAME),
         "_Enter",
@@ -353,8 +355,8 @@ def main():
         "Folder:",
         folder,
         "",
-        "Each file is a third-angle drawing: top, front, and right.",
-        "The whole sheet is fitted onto the page.",
+        "Each file is only the view stored in that snapshot.",
+        "The drawing is fitted onto the page.",
         "The model is left on the last snapshot that was restored.",
     ]
     if skipped:

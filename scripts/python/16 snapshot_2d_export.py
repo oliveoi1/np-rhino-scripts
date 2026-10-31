@@ -787,7 +787,7 @@ def ink_black_lines(bitmap):
                 green = buffer[pixel + 1]
                 red = buffer[pixel + 2]
                 lum[base + x_value] = (red * 3 + green * 6 + blue) // 10
-        threshold = 36
+        threshold = 20
         edge = bytearray(total)
         for y_value in range(1, height - 1):
             row = y_value * width
@@ -814,7 +814,7 @@ def ink_black_lines(bitmap):
                 )
                 if neighbors >= 3:
                     keep[row + x_value] = 1
-        radius = max(4, width // 700)
+        radius = max(8, width // 500)
         horizontal = bytearray(total)
         for y_value in range(height):
             row = y_value * width

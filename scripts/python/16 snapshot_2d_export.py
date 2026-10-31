@@ -28,7 +28,8 @@ RENDER_LONG_EDGE = 4800
 RENDER_DPI = 300.0
 RENDER_SUPERSAMPLE = 2
 COMIC_MODE_NAME = "NP Comic"
-COMIC_EDGE_PIXELS = 14
+COMIC_EDGE_PIXELS = 6
+COMIC_CAPTURE_SCALE = 2
 
 LAYER_NAME = "2d"
 PAGE_WIDTH_IN = 16.0
@@ -783,228 +784,6 @@ def ensure_comic_mode():
     return mode
 
 
-def byte_at(raw, index):
-    try:
-        return int(raw[index]) & 255
-    except Exception:
-        return int(raw.GetValue(index)) & 255
-
-
-def read_bitmap_bytes(bitmap):
-    """Return BGRA bytes and stride. Falls back to GetPixel if the buffer does not match the picture."""
-    width = bitmap.Width
-    height = bitmap.Height
-    pixel_format = System.Drawing.Imaging.PixelFormat.Format32bppArgb
-    rect = System.Drawing.Rectangle(0, 0, width, height)
-    data = bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, pixel_format)
-    try:
-        stride = data.Stride
-        count = abs(stride) * height
-        raw = System.Array.CreateInstance(System.Byte, count)
-        System.Runtime.InteropServices.Marshal.Copy(data.Scan0, raw, 0, count)
-    finally:
-        bitmap.UnlockBits(data)
-    sample_x = min(8, width - 1)
-    sample_y = min(8, height - 1)
-    color = bitmap.GetPixel(sample_x, sample_y)
-    if stride < 0:
-        pixel = (height - 1 - sample_y) * abs(stride) + (sample_x * 4)
-    else:
-        pixel = (sample_y * stride) + (sample_x * 4)
-    if (
-        abs(byte_at(raw, pixel + 2) - color.R) > 3
-        or abs(byte_at(raw, pixel + 1) - color.G) > 3
-        or abs(byte_at(raw, pixel) - color.B) > 3
-    ):
-        stride = width * 4
-        raw = System.Array.CreateInstance(System.Byte, stride * height)
-        for y_value in range(height):
-            row = y_value * stride
-            for x_value in range(width):
-                point = bitmap.GetPixel(x_value, y_value)
-                index = row + (x_value * 4)
-                raw[index] = point.B
-                raw[index + 1] = point.G
-                raw[index + 2] = point.R
-                raw[index + 3] = point.A
-    return raw, stride
-
-
-def dark_pixel_fraction(bitmap):
-    width = bitmap.Width
-    height = bitmap.Height
-    step_x = max(1, width // 90)
-    step_y = max(1, height // 70)
-    total = 0
-    dark = 0
-    y_value = 0
-    while y_value < height:
-        x_value = 0
-        while x_value < width:
-            color = bitmap.GetPixel(x_value, y_value)
-            total += 1
-            if color.R < 40 and color.G < 40 and color.B < 40:
-                dark += 1
-            x_value += step_x
-        y_value += step_y
-    if total < 1:
-        return 0.0
-    return dark / float(total)
-
-
-def dilate_mask(keep, width, height, radius):
-    total = width * height
-    horizontal = bytearray(total)
-    for y_value in range(height):
-        row = y_value * width
-        count = 0
-        for x_value in range(min(width, radius + 1)):
-            count += keep[row + x_value]
-        for x_value in range(width):
-            if count:
-                horizontal[row + x_value] = 1
-            remove_at = x_value - radius
-            if remove_at >= 0:
-                count -= keep[row + remove_at]
-            add_at = x_value + radius + 1
-            if add_at < width:
-                count += keep[row + add_at]
-    inked = bytearray(total)
-    for x_value in range(width):
-        count = 0
-        for y_value in range(min(height, radius + 1)):
-            count += horizontal[(y_value * width) + x_value]
-        for y_value in range(height):
-            if count:
-                inked[(y_value * width) + x_value] = 1
-            remove_at = y_value - radius
-            if remove_at >= 0:
-                count -= horizontal[(remove_at * width) + x_value]
-            add_at = y_value + radius + 1
-            if add_at < height:
-                count += horizontal[(add_at * width) + x_value]
-    return inked
-
-
-def stamp_outline(bitmap, mask):
-    graphics = System.Drawing.Graphics.FromImage(bitmap)
-    try:
-        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic
-        graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality
-        graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver
-        graphics.DrawImage(mask, 0, 0, bitmap.Width, bitmap.Height)
-    finally:
-        graphics.Dispose()
-
-
-def ink_black_lines(bitmap):
-    """Paint the panel edges black when the viewport edge overlay did not survive the capture."""
-    width = bitmap.Width
-    height = bitmap.Height
-    if width < 8 or height < 8:
-        return bitmap
-    detect_width = min(width, 1200)
-    detect_height = max(1, int(round(height * float(detect_width) / float(width))))
-    small = downscale_bitmap(bitmap, detect_width, detect_height)
-    mask = None
-    try:
-        raw, stride = read_bitmap_bytes(small)
-        stride_abs = abs(stride)
-        total = detect_width * detect_height
-        lum = bytearray(total)
-        for y_value in range(detect_height):
-            source_y = y_value if stride >= 0 else (detect_height - 1 - y_value)
-            row = source_y * stride_abs
-            base = y_value * detect_width
-            for x_value in range(detect_width):
-                pixel = row + (x_value * 4)
-                red = byte_at(raw, pixel + 2)
-                green = byte_at(raw, pixel + 1)
-                blue = byte_at(raw, pixel)
-                lum[base + x_value] = (red * 3 + green * 6 + blue) // 10
-        threshold = 18
-        edge = bytearray(total)
-        for y_value in range(1, detect_height - 1):
-            row = y_value * detect_width
-            for x_value in range(1, detect_width - 1):
-                center = lum[row + x_value]
-                contrast = max(
-                    abs(center - lum[row + x_value + 1]),
-                    abs(center - lum[row + detect_width + x_value]),
-                    abs(center - lum[row + x_value - 1]),
-                    abs(center - lum[row - detect_width + x_value]),
-                )
-                if contrast >= threshold:
-                    edge[row + x_value] = 1
-        keep = bytearray(total)
-        for y_value in range(1, detect_height - 1):
-            row = y_value * detect_width
-            for x_value in range(1, detect_width - 1):
-                if not edge[row + x_value]:
-                    continue
-                neighbors = (
-                    edge[row - detect_width + x_value - 1]
-                    + edge[row - detect_width + x_value]
-                    + edge[row - detect_width + x_value + 1]
-                    + edge[row + x_value - 1]
-                    + edge[row + x_value]
-                    + edge[row + x_value + 1]
-                    + edge[row + detect_width + x_value - 1]
-                    + edge[row + detect_width + x_value]
-                    + edge[row + detect_width + x_value + 1]
-                )
-                if neighbors >= 3:
-                    keep[row + x_value] = 1
-        radius = max(2, int(round((COMIC_EDGE_PIXELS / 2.0) * float(detect_width) / float(width))))
-        inked = dilate_mask(keep, detect_width, detect_height, radius)
-        pixel_format = System.Drawing.Imaging.PixelFormat.Format32bppArgb
-        mask = System.Drawing.Bitmap(detect_width, detect_height, pixel_format)
-        rect = System.Drawing.Rectangle(0, 0, detect_width, detect_height)
-        data = mask.LockBits(rect, System.Drawing.Imaging.ImageLockMode.WriteOnly, pixel_format)
-        try:
-            mask_stride = data.Stride
-            count = abs(mask_stride) * detect_height
-            raw_mask = System.Array.CreateInstance(System.Byte, count)
-            for y_value in range(detect_height):
-                if mask_stride >= 0:
-                    row = y_value * mask_stride
-                    base = y_value * detect_width
-                else:
-                    row = (detect_height - 1 - y_value) * abs(mask_stride)
-                    base = y_value * detect_width
-                for x_value in range(detect_width):
-                    if not inked[base + x_value]:
-                        continue
-                    pixel = row + (x_value * 4)
-                    raw_mask[pixel + 3] = 255
-            System.Runtime.InteropServices.Marshal.Copy(raw_mask, 0, data.Scan0, count)
-        finally:
-            mask.UnlockBits(data)
-        sample = None
-        for index in range(total):
-            if inked[index]:
-                sample = index
-                break
-        if sample is not None:
-            sample_color = mask.GetPixel(sample % detect_width, sample // detect_width)
-            if sample_color.A < 200:
-                black = System.Drawing.Color.FromArgb(255, 0, 0, 0)
-                clear = System.Drawing.Color.FromArgb(0, 0, 0, 0)
-                for y_value in range(detect_height):
-                    base = y_value * detect_width
-                    for x_value in range(detect_width):
-                        if inked[base + x_value]:
-                            mask.SetPixel(x_value, y_value, black)
-                        else:
-                            mask.SetPixel(x_value, y_value, clear)
-        stamp_outline(bitmap, mask)
-    finally:
-        if small is not None and small is not bitmap:
-            small.Dispose()
-        if mask is not None:
-            mask.Dispose()
-    return bitmap
-
 
 def render_snapshot(path, style):
     view = sc.doc.Views.ActiveView
@@ -1020,7 +799,7 @@ def render_snapshot(path, style):
             mode = ensure_comic_mode()
             if mode is not None:
                 view.ActiveViewport.DisplayMode = mode
-            scale = 1
+            scale = COMIC_CAPTURE_SCALE
         else:
             set_display_mode(view, "Shaded")
             scale = RENDER_SUPERSAMPLE
@@ -1044,8 +823,6 @@ def render_snapshot(path, style):
             bitmap = capture_view_bitmap(view, pixel_width, pixel_height, 0)
         if not bitmap_has_content(bitmap):
             raise RuntimeError("view came out black")
-        if style == "cartoon" and dark_pixel_fraction(bitmap) < 0.004:
-            ink_black_lines(bitmap)
         bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
         bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png)
         return os.path.isfile(path) and os.path.getsize(path) > 1

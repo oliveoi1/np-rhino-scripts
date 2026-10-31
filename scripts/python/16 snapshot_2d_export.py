@@ -301,7 +301,9 @@ def page_transform(box):
 
 def add_curves(doc, items, xform):
     added = 0
-    for curve, full_path in items:
+    for item in items:
+        curve = item[0]
+        full_path = item[1]
         geom = curve.Duplicate()
         if geom is None:
             continue
@@ -466,24 +468,20 @@ def append_polyline(commands, polyline):
     commands.append("S")
 
 
-def build_vector_pdf(solid, hidden, page_width, page_height, stroke_width):
+def build_vector_pdf(strokes, page_width, page_height):
     """Write a one-page PDF whose lines are vector paths, in points, origin bottom-left."""
-    commands = [
-        "{:.3f} w".format(stroke_width),
-        "1 J",
-        "1 j",
-        "0 0 0 RG",
-        "[] 0 d",
-    ]
-    for polyline in solid:
-        if len(polyline) >= 2:
-            append_polyline(commands, polyline)
-    if hidden:
-        commands.append("[3 2] 0 d")
-        for polyline in hidden:
-            if len(polyline) >= 2:
-                append_polyline(commands, polyline)
-    if len(commands) < 6:
+    commands = ["1 J", "1 j", "0 0 0 RG", "[] 0 d"]
+    current_width = None
+    drew = False
+    for stroke_width, polyline in strokes:
+        if len(polyline) < 2:
+            continue
+        if current_width != stroke_width:
+            commands.append("{:.3f} w".format(stroke_width))
+            current_width = stroke_width
+        append_polyline(commands, polyline)
+        drew = True
+    if not drew:
         return None
     content = "\n".join(commands) + "\n"
     stream = content.encode("ascii")
@@ -520,17 +518,19 @@ def build_vector_pdf(solid, hidden, page_width, page_height, stroke_width):
 
 
 def write_vector_pdf(items, path):
-    solid = []
-    hidden = []
-    for curve, full_path in items:
+    strokes = []
+    for curve, full_path, width_mm in items:
+        if full_path and "Hidden" in full_path:
+            continue
         points = curve_points(curve)
         if len(points) < 2:
             continue
-        if full_path and "Hidden" in full_path:
-            hidden.append(points)
+        if width_mm > 0.0:
+            stroke = width_mm * 72.0 / 25.4
         else:
-            solid.append(points)
-    data = build_vector_pdf(solid, hidden, PAGE_WIDTH_PT, PAGE_HEIGHT_PT, 0.5)
+            stroke = 0.5
+        strokes.append((round(stroke, 3), points))
+    data = build_vector_pdf(strokes, PAGE_WIDTH_PT, PAGE_HEIGHT_PT)
     if not data or (b" m\n" not in data):
         return False
     with open(path, "wb") as handle:
@@ -540,7 +540,7 @@ def write_vector_pdf(items, path):
 
 def write_snapshot_file(items, path, extension):
     box = Rhino.Geometry.BoundingBox.Empty
-    for curve, _full_path in items:
+    for curve, _full_path, _width_mm in items:
         box.Union(curve.GetBoundingBox(True))
     if not box.IsValid:
         return False
@@ -548,12 +548,12 @@ def write_snapshot_file(items, path, extension):
     if xform is None:
         return False
     fitted = []
-    for curve, full_path in items:
+    for curve, full_path, width_mm in items:
         geom = curve.Duplicate()
         if geom is None:
             continue
         geom.Transform(xform)
-        fitted.append((geom, full_path))
+        fitted.append((geom, full_path, width_mm))
     if not fitted:
         return False
     if extension == ".pdf":
@@ -638,11 +638,12 @@ def run_make2d():
         "_Layout=_View",
         "_Properties=_FromInputObjects",
         "_ShowTangents=_Yes",
-        "_CreateHiddenLines=_Yes",
+        "_CreateHiddenLines=_No",
         "_CreateSceneSilhouette=_Yes",
         "_CreateClippingPlaneIntersections=_No",
         "_ShowViewRectangle=_No",
         "_GroupOutput=_Yes",
+        "_RegisterWithPrevious=_No",
         '_LayerName "{}"'.format(LAYER_NAME),
         "_Enter",
     ])
@@ -652,6 +653,26 @@ def run_make2d():
         return int(rs.LastCommandResult()) == 0
     except Exception:
         return bool(rs.LastCommandResult() == 0)
+
+
+def curve_width_mm(rhobj):
+    """Print width Make2D stored on the curve or its layer, in millimeters. Zero means the default width."""
+    attrs = rhobj.Attributes
+    use_object = False
+    try:
+        use_object = "Object" in str(attrs.PlotWeightSource)
+    except Exception:
+        use_object = False
+    try:
+        if use_object:
+            weight = float(attrs.PlotWeight)
+        else:
+            weight = float(sc.doc.Layers[attrs.LayerIndex].PlotWeight)
+    except Exception:
+        weight = 0.0
+    if weight < 0.0:
+        weight = 0.0
+    return weight
 
 
 def curves_from_objects(obj_ids):
@@ -667,7 +688,9 @@ def curves_from_objects(obj_ids):
             full_path = sc.doc.Layers[rhobj.Attributes.LayerIndex].FullPath or LAYER_NAME
         except Exception:
             full_path = LAYER_NAME
-        items.append((geom, full_path))
+        if "Hidden" in full_path:
+            continue
+        items.append((geom, full_path, curve_width_mm(rhobj)))
     return items
 
 
@@ -964,7 +987,7 @@ def main():
     else:
         lines.append("Each file is the Make2D of the view stored in that snapshot.")
         lines.append("PDF lines are vectors, so they stay sharp in InDesign.")
-        lines.append("Visible edges are solid. Hidden edges are dashed.")
+        lines.append("Hidden lines are off. Scene silhouettes use the line weight Make2D gives them.")
     lines.append("The model is left on the last snapshot that was restored.")
     if skipped:
         lines.append("")

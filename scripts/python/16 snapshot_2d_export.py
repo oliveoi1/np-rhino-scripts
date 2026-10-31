@@ -2,8 +2,8 @@
 Make a 2D drawing of the view stored in each chosen snapshot and export it.
 
 Restores the snapshot, then either runs Make2D for a line drawing or
-captures a high-resolution render with materials. Make2D includes tangent
-edges and scene silhouettes, and those curves are removed after export.
+captures a high-resolution shaded view with flat color. Make2D includes
+tangent edges and scene silhouettes, and those curves are removed after export.
 """
 
 import os
@@ -19,12 +19,12 @@ FORMATS = [
     ("Adobe Illustrator (.ai)", ".ai"),
     ("EPS (.eps)", ".eps"),
     ("PDF (.pdf)", ".pdf"),
-    ("Render with materials (.png)", ".png"),
+    ("Shaded view, high resolution (.png)", ".png"),
 ]
 
 RENDER_LONG_EDGE = 4800
 RENDER_DPI = 300.0
-RENDER_PASSES = 100
+RENDER_SUPERSAMPLE = 2
 
 LAYER_NAME = "2d"
 PAGE_WIDTH_IN = 16.0
@@ -686,29 +686,54 @@ def capture_view_bitmap(view, pixel_width, pixel_height, passes):
         return None
 
 
+def downscale_bitmap(source, width, height):
+    result = System.Drawing.Bitmap(int(width), int(height))
+    result.SetResolution(RENDER_DPI, RENDER_DPI)
+    graphics = System.Drawing.Graphics.FromImage(result)
+    try:
+        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic
+        graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality
+        graphics.DrawImage(source, 0, 0, int(width), int(height))
+    finally:
+        graphics.Dispose()
+    return result
+
+
 def render_snapshot(path):
+    """Flat shaded view: material color, no wood grain, no cast shadows."""
     view = sc.doc.Views.ActiveView
     if view is None:
         raise RuntimeError("no active view")
     pixel_width, pixel_height = render_pixel_size(view.ActiveViewport)
     previous_mode = view.ActiveViewport.DisplayMode
+    large = None
     bitmap = None
     try:
-        if set_display_mode(view, "Raytraced"):
-            print("Raytracing snapshot, {} passes...".format(RENDER_PASSES))
-            bitmap = capture_view_bitmap(view, pixel_width, pixel_height, RENDER_PASSES)
-        if not bitmap_has_content(bitmap):
-            if bitmap is not None:
-                bitmap.Dispose()
-                bitmap = None
-            set_display_mode(view, "Rendered")
+        set_display_mode(view, "Shaded")
+        view.Redraw()
+        Rhino.RhinoApp.Wait()
+        large = capture_view_bitmap(
+            view,
+            pixel_width * RENDER_SUPERSAMPLE,
+            pixel_height * RENDER_SUPERSAMPLE,
+            0,
+        )
+        if bitmap_has_content(large):
+            bitmap = downscale_bitmap(large, pixel_width, pixel_height)
+        else:
+            if large is not None:
+                large.Dispose()
+                large = None
             bitmap = capture_view_bitmap(view, pixel_width, pixel_height, 0)
         if not bitmap_has_content(bitmap):
-            raise RuntimeError("render came out black")
+            raise RuntimeError("shaded view came out black")
         bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
         bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png)
         return os.path.isfile(path) and os.path.getsize(path) > 1
     finally:
+        if large is not None and large is not bitmap:
+            large.Dispose()
         if bitmap is not None:
             bitmap.Dispose()
         try:
@@ -777,7 +802,7 @@ def main():
         return
 
     start_folder = rs.DocumentPath() or os.path.expanduser("~")
-    folder_prompt = "Folder for the render files" if extension == ".png" else "Folder for the 2D files"
+    folder_prompt = "Folder for the shaded views" if extension == ".png" else "Folder for the 2D files"
     folder = rs.BrowseForFolder(start_folder, folder_prompt, "Snapshot 2D Export")
     if not folder:
         return
@@ -844,8 +869,9 @@ def main():
         "",
     ]
     if extension == ".png":
-        lines.append("Each file is a raytraced render of that snapshot, with materials.")
-        lines.append("The long edge is {} pixels at 300 dpi. Raytracing takes longer than a viewport capture.".format(RENDER_LONG_EDGE))
+        lines.append("Each file is a high-resolution shaded view of that snapshot.")
+        lines.append("Flat color, no wood grain, and no cast shadows.")
+        lines.append("The long edge is {} pixels at 300 dpi.".format(RENDER_LONG_EDGE))
     else:
         lines.append("Each file is the Make2D of the view stored in that snapshot.")
         lines.append("PDF lines are vectors, so they stay sharp in InDesign.")

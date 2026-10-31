@@ -53,6 +53,7 @@ SCRIPT_CHOICES = [
     ("10 - Logo Cut", "10 logo_cut.py"),
     ("11 - Export Blocks to SketchUp", "11 export_blocks_to_skp.py"),
     ("12 - Zero SKU Insertion Z", "12 zero_sku_insertion_z.py"),
+    ("16 - Snapshot 2D Export", "16 snapshot_2d_export.py"),
 ]
 
 FORCE_UPDATE_LABEL = "Force Update"

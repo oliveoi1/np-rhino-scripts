@@ -27,6 +27,7 @@ Current scripts in this folder:
 - `09 plan view.py`
 - `10 logo_cut.py`
 - `12 zero_sku_insertion_z.py`
+- `16 snapshot_2d_export.py`
 
 ## Notes
 

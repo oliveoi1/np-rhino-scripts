@@ -640,55 +640,104 @@ def render_pixel_size(viewport):
 
 
 def use_rendered_display(view):
-    previous = view.ActiveViewport.DisplayMode
     rendered = Rhino.Display.DisplayModeDescription.FindByName("Rendered")
     if rendered is not None:
         view.ActiveViewport.DisplayMode = rendered
     view.Redraw()
     Rhino.RhinoApp.Wait()
-    return previous
+
+
+def bitmap_has_content(bitmap):
+    if bitmap is None or bitmap.Width < 2 or bitmap.Height < 2:
+        return False
+    width = bitmap.Width
+    height = bitmap.Height
+    points = (
+        (width // 2, height // 2),
+        (width // 5, height // 5),
+        (4 * width // 5, height // 2),
+        (width // 2, 4 * height // 5),
+        (width // 3, 2 * height // 3),
+    )
+    for x_value, y_value in points:
+        color = bitmap.GetPixel(x_value, y_value)
+        if color.R > 8 or color.G > 8 or color.B > 8:
+            return True
+    return False
+
+
+def capture_view_bitmap(view, pixel_width, pixel_height):
+    capture = Rhino.Display.ViewCapture()
+    capture.Width = int(pixel_width)
+    capture.Height = int(pixel_height)
+    for prop, value in (
+        ("ScaleScreenItems", False),
+        ("DrawAxes", False),
+        ("DrawGrid", False),
+        ("DrawGridAxes", False),
+        ("TransparentBackground", False),
+    ):
+        try:
+            setattr(capture, prop, value)
+        except Exception:
+            pass
+    view.Redraw()
+    Rhino.RhinoApp.Wait()
+    bitmap = None
+    try:
+        bitmap = capture.CaptureToBitmap(view)
+    except Exception:
+        try:
+            bitmap = capture.CaptureToBitmap(view.ActiveViewport)
+        except Exception:
+            bitmap = None
+    if bitmap_has_content(bitmap):
+        return bitmap
+    if bitmap is not None:
+        bitmap.Dispose()
+    try:
+        return view.CaptureToBitmap(System.Drawing.Size(int(pixel_width), int(pixel_height)))
+    except Exception:
+        return None
 
 
 def render_snapshot(path):
     view = sc.doc.Views.ActiveView
     if view is None:
         raise RuntimeError("no active view")
-    previous_mode = None
+    pixel_width, pixel_height = render_pixel_size(view.ActiveViewport)
+    sizes = (
+        (pixel_width, pixel_height),
+        (max(1, pixel_width // 2), max(1, pixel_height // 2)),
+    )
+    previous_mode = view.ActiveViewport.DisplayMode
     bitmap = None
     try:
-        previous_mode = use_rendered_display(view)
-        pixel_width, pixel_height = render_pixel_size(view.ActiveViewport)
-        settings = Rhino.Display.ViewCaptureSettings(
-            view,
-            System.Drawing.Size(pixel_width, pixel_height),
-            RENDER_DPI,
-        )
-        for prop, value in (
-            ("DrawGrid", False),
-            ("DrawAxis", False),
-            ("DrawAxes", False),
-            ("DrawWallpaper", True),
-            ("TransparentBackground", False),
-        ):
-            try:
-                setattr(settings, prop, value)
-            except Exception:
-                pass
-        bitmap = Rhino.Display.ViewCapture.CaptureToBitmap(settings)
-        if bitmap is None:
-            return False
+        for width, height in sizes:
+            bitmap = capture_view_bitmap(view, width, height)
+            if bitmap_has_content(bitmap):
+                break
+            if bitmap is not None:
+                bitmap.Dispose()
+                bitmap = None
+        if bitmap is None or not bitmap_has_content(bitmap):
+            use_rendered_display(view)
+            view.Redraw()
+            Rhino.RhinoApp.Wait()
+            bitmap = capture_view_bitmap(view, pixel_width, pixel_height)
+        if not bitmap_has_content(bitmap):
+            raise RuntimeError("render came out black")
         bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
         bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png)
         return os.path.isfile(path) and os.path.getsize(path) > 1
     finally:
         if bitmap is not None:
             bitmap.Dispose()
-        if previous_mode is not None:
-            try:
-                view.ActiveViewport.DisplayMode = previous_mode
-                view.Redraw()
-            except Exception:
-                pass
+        try:
+            view.ActiveViewport.DisplayMode = previous_mode
+            view.Redraw()
+        except Exception:
+            pass
 
 
 def delete_objects(obj_ids):

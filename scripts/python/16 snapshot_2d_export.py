@@ -11,7 +11,6 @@ import os
 import Rhino
 import System
 import System.Drawing
-import System.Runtime.InteropServices
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
@@ -27,8 +26,6 @@ FORMATS = [
 RENDER_LONG_EDGE = 4800
 RENDER_DPI = 300.0
 RENDER_SUPERSAMPLE = 2
-COMIC_MODE_NAME = "NP Comic"
-COMIC_EDGE_PIXELS = 12
 COMIC_CAPTURE_SCALE = 2
 
 LAYER_NAME = "2d"
@@ -655,12 +652,12 @@ def set_display_mode(view, mode_name):
     return True
 
 
-def capture_view_bitmap(view, pixel_width, pixel_height, passes):
+def capture_view_bitmap(view, pixel_width, pixel_height, passes, scale_screen=False):
     capture = Rhino.Display.ViewCapture()
     capture.Width = int(pixel_width)
     capture.Height = int(pixel_height)
     for prop, value in (
-        ("ScaleScreenItems", False),
+        ("ScaleScreenItems", bool(scale_screen)),
         ("DrawAxes", False),
         ("DrawGrid", False),
         ("DrawGridAxes", False),
@@ -705,85 +702,6 @@ def downscale_bitmap(source, width, height):
     return result
 
 
-def display_enum(enum_name, member_name):
-    enum_type = getattr(Rhino.Display.DisplayPipelineAttributes, enum_name, None)
-    if enum_type is None:
-        return None
-    return getattr(enum_type, member_name, None)
-
-
-def assign_display(attrs, prop, value):
-    if value is None:
-        return
-    try:
-        setattr(attrs, prop, value)
-    except Exception:
-        pass
-
-
-def ensure_comic_mode():
-    """Rendered panel color, with the same edge lines Rhino shows, drawn in black."""
-    source = Rhino.Display.DisplayModeDescription.FindByName("Rendered")
-    if source is None:
-        return None
-    mode = Rhino.Display.DisplayModeDescription.FindByName(COMIC_MODE_NAME)
-    if mode is None:
-        try:
-            added = Rhino.Display.DisplayModeDescription.AddDisplayMode(COMIC_MODE_NAME)
-        except Exception:
-            added = None
-        if added is not None and not isinstance(added, bool):
-            mode = added
-        else:
-            mode = Rhino.Display.DisplayModeDescription.FindByName(COMIC_MODE_NAME)
-    if mode is None:
-        return source
-    try:
-        attrs = source.DisplayAttributes
-        black = System.Drawing.Color.Black
-        single = display_enum("SurfaceEdgeColorUse", "SingleColorForAll")
-        naked_single = display_enum("SurfaceNakedEdgeColorUse", "SingleColorForAll")
-        pixels = display_enum("SurfaceThicknessUse", "Pixels")
-        naked_pixels = display_enum("SurfaceNakedEdgeThicknessUse", "Pixels")
-        edge = int(COMIC_EDGE_PIXELS)
-        for prop, value in (
-            ("ShowSurfaceEdges", True),
-            ("ShowSurfaceEdge", True),
-            ("ShowSurfaceNakedEdge", True),
-            ("ShowMeshEdges", True),
-            ("ShowMeshNakedEdges", True),
-            ("FlatShade", True),
-            ("ShadingEnabled", True),
-            ("SurfaceEdgeColor", black),
-            ("SurfaceNakedEdgeColor", black),
-            ("MeshEdgeColor", black),
-            ("MeshNakedEdgeColor", black),
-            ("SurfaceEdgeColorUsage", single),
-            ("SurfaceNakedEdgeColorUsage", naked_single),
-            ("SurfaceEdgeColorReduction", 0),
-            ("SurfaceEdgeColorReductionPercent", 0),
-            ("SurfaceEdgeThickness", edge),
-            ("SurfaceNakedEdgeThickness", edge),
-            ("MeshEdgeThickness", edge),
-            ("MeshNakedEdgeThickness", edge),
-        ):
-            assign_display(attrs, prop, value)
-        if pixels is not None:
-            try:
-                attrs.SetSurfaceEdgeThicknessUsage(pixels)
-            except Exception:
-                pass
-        if naked_pixels is not None:
-            try:
-                attrs.SetSurfaceNakedEdgeThicknessUsage(naked_pixels)
-            except Exception:
-                pass
-        mode.DisplayAttributes = attrs
-    except Exception:
-        return source
-    return mode
-
-
 def render_snapshot(path, style):
     view = sc.doc.Views.ActiveView
     if view is None:
@@ -795,13 +713,12 @@ def render_snapshot(path, style):
     bitmap = None
     try:
         if style == "cartoon":
-            mode = ensure_comic_mode()
-            if mode is not None:
-                view.ActiveViewport.DisplayMode = mode
             scale = COMIC_CAPTURE_SCALE
+            scale_screen = True
         else:
             set_display_mode(view, "Shaded")
             scale = RENDER_SUPERSAMPLE
+            scale_screen = False
         view.Redraw()
         Rhino.RhinoApp.Wait()
         large = capture_view_bitmap(
@@ -809,6 +726,7 @@ def render_snapshot(path, style):
             pixel_width * scale,
             pixel_height * scale,
             0,
+            scale_screen,
         )
         if scale == 1 and bitmap_has_content(large):
             bitmap = large
@@ -819,7 +737,7 @@ def render_snapshot(path, style):
             if large is not None:
                 large.Dispose()
                 large = None
-            bitmap = capture_view_bitmap(view, pixel_width, pixel_height, 0)
+            bitmap = capture_view_bitmap(view, pixel_width, pixel_height, 0, scale_screen)
         if not bitmap_has_content(bitmap):
             raise RuntimeError("view came out black")
         bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
@@ -899,7 +817,7 @@ def main():
 
     start_folder = rs.DocumentPath() or os.path.expanduser("~")
     if style == "cartoon":
-        folder_prompt = "Folder for the cartoon views"
+        folder_prompt = "Folder for the snapshot views"
     elif style == "shaded":
         folder_prompt = "Folder for the shaded views"
     else:
@@ -970,7 +888,7 @@ def main():
         "",
     ]
     if style == "cartoon":
-        lines.append("Each file is a cartoon of that snapshot: flat color and a heavy black outline.")
+        lines.append("Each file is that snapshot view, with the display mode already set in the window.")
         lines.append("The long edge is {} pixels at 300 dpi.".format(RENDER_LONG_EDGE))
     elif style == "shaded":
         lines.append("Each file is a high-resolution shaded view of that snapshot.")

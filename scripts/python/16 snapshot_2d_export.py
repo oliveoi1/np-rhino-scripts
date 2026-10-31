@@ -196,6 +196,86 @@ def apply_ai_units(options):
         options.AiUnits = inches
 
 
+PATH_COMMANDS = set(["m", "l", "L", "c", "C", "v", "V", "y", "Y"])
+PAGE_WIDTH_PT = 792.0
+PAGE_HEIGHT_PT = 612.0
+PAGE_MARGIN_PT = 36.0
+
+
+def path_coordinates(line):
+    parts = line.split()
+    if len(parts) < 3 or parts[-1] not in PATH_COMMANDS:
+        return None
+    try:
+        numbers = [float(part) for part in parts[:-1]]
+    except ValueError:
+        return None
+    if len(numbers) < 2 or len(numbers) % 2 != 0:
+        return None
+    return numbers, parts[-1]
+
+
+def fit_vector_file_to_page(path):
+    """Rhino writes the curves in a tiny coordinate range. Scale them onto the page."""
+    try:
+        raw = open(path, "rb").read()
+    except Exception:
+        return False
+    newline = "\r\n" if b"\r\n" in raw[:200] else "\n"
+    text = raw.decode("latin1")
+    lines = text.splitlines()
+    parsed = [path_coordinates(line) for line in lines]
+    xs = []
+    ys = []
+    for item in parsed:
+        if not item:
+            continue
+        numbers, _cmd = item
+        xs.extend(numbers[0::2])
+        ys.extend(numbers[1::2])
+    if not xs:
+        return False
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    width = max_x - min_x
+    height = max_y - min_y
+    if width < 1e-9 or height < 1e-9:
+        return False
+    usable_w = PAGE_WIDTH_PT - (2.0 * PAGE_MARGIN_PT)
+    usable_h = PAGE_HEIGHT_PT - (2.0 * PAGE_MARGIN_PT)
+    scale = min(usable_w / width, usable_h / height)
+
+    def map_x(value):
+        return PAGE_MARGIN_PT + (value - min_x) * scale
+
+    def map_y(value):
+        return PAGE_MARGIN_PT + (value - min_y) * scale
+
+    output = []
+    for line, item in zip(lines, parsed):
+        if item:
+            numbers, cmd = item
+            mapped = []
+            for index in range(0, len(numbers), 2):
+                mapped.append("{:.4f}".format(map_x(numbers[index])))
+                mapped.append("{:.4f}".format(map_y(numbers[index + 1])))
+            mapped.append(cmd)
+            output.append(" ".join(mapped))
+            continue
+        if line.startswith("%%BoundingBox:"):
+            output.append("%%BoundingBox: 0 0 {:.0f} {:.0f}".format(PAGE_WIDTH_PT, PAGE_HEIGHT_PT))
+        elif line.startswith("%AI3_TileBox:"):
+            output.append("%AI3_TileBox: 0 0 {:.0f} {:.0f}".format(PAGE_WIDTH_PT, PAGE_HEIGHT_PT))
+        elif line.startswith("%AI3_TemplateBox:"):
+            output.append("%AI3_TemplateBox: 0 0 {:.0f} {:.0f}".format(PAGE_WIDTH_PT, PAGE_HEIGHT_PT))
+        else:
+            output.append(line)
+    data = newline.join(output) + newline
+    with open(path, "wb") as handle:
+        handle.write(data.encode("latin1"))
+    return True
+
+
 def export_drawing(doc, path, extension):
     try:
         doc.AdjustModelUnitSystem(Rhino.UnitSystem.Inches, False)
@@ -231,7 +311,11 @@ def write_snapshot_file(object_ids_to_copy, path, extension):
     try:
         if copy_drawing(doc, object_ids_to_copy, xform) < 1:
             return False
-        return export_drawing(doc, path, extension)
+        if not export_drawing(doc, path, extension):
+            return False
+        if extension in (".ai", ".eps"):
+            fit_vector_file_to_page(path)
+        return True
     finally:
         doc.Dispose()
 

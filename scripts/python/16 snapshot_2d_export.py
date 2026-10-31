@@ -1,9 +1,9 @@
 """
 Make a 2D drawing of the view stored in each chosen snapshot and export it.
 
-The drawing is projected the way that view looks on screen, including
-perspective. Tangent edges and scene silhouettes are included. Hidden
-lines are not. The 2D curves are not added to the model.
+Restores the snapshot, selects the visible model, and runs Make2D on
+that view only. Tangent edges and scene silhouettes are included. Hidden
+lines are not. The Make2D curves are removed from the model after export.
 """
 
 import os
@@ -545,6 +545,94 @@ def unique_filename(used, name, extension):
     return candidate + extension
 
 
+def is_output_layer(layer_index):
+    try:
+        layer = sc.doc.Layers[layer_index]
+    except Exception:
+        return False
+    if layer is None:
+        return False
+    full = layer.FullPath or ""
+    return full == LAYER_NAME or full.startswith(LAYER_NAME + "::")
+
+
+def object_ids():
+    found = []
+    for obj in sc.doc.Objects:
+        if obj is not None and not obj.IsDeleted:
+            found.append(obj.Id)
+    return found
+
+
+def select_all_for_make2d():
+    rs.UnselectAllObjects()
+    count = 0
+    for obj in sc.doc.Objects:
+        if obj is None or obj.IsDeleted or is_output_layer(obj.Attributes.LayerIndex):
+            continue
+        try:
+            selectable = obj.IsSelectable(True, False, False, False)
+        except Exception:
+            selectable = False
+        if not selectable:
+            continue
+        obj.Select(True)
+        count += 1
+    return count
+
+
+def run_make2d():
+    script = " ".join([
+        "_-Make2D",
+        "_Layout=_View",
+        "_Properties=_FromInputObjects",
+        "_ShowTangents=_Yes",
+        "_CreateHiddenLines=_No",
+        "_CreateSceneSilhouette=_Yes",
+        "_CreateClippingPlaneIntersections=_No",
+        "_ShowViewRectangle=_No",
+        "_GroupOutput=_Yes",
+        '_LayerName "{}"'.format(LAYER_NAME),
+        "_Enter",
+    ])
+    rs.Command(script, echo=False)
+    Rhino.RhinoApp.Wait()
+    try:
+        return int(rs.LastCommandResult()) == 0
+    except Exception:
+        return bool(rs.LastCommandResult() == 0)
+
+
+def curves_from_objects(obj_ids):
+    items = []
+    for obj_id in obj_ids:
+        rhobj = sc.doc.Objects.FindId(obj_id)
+        if rhobj is None or rhobj.Geometry is None:
+            continue
+        geom = rhobj.Geometry.Duplicate()
+        if not isinstance(geom, Rhino.Geometry.Curve):
+            continue
+        try:
+            full_path = sc.doc.Layers[rhobj.Attributes.LayerIndex].FullPath or LAYER_NAME
+        except Exception:
+            full_path = LAYER_NAME
+        items.append((geom, full_path))
+    return items
+
+
+def delete_objects(obj_ids):
+    if not obj_ids:
+        return
+    try:
+        rs.DeleteObjects(obj_ids)
+    except Exception:
+        for obj_id in obj_ids:
+            try:
+                sc.doc.Objects.Delete(obj_id, True)
+            except Exception:
+                pass
+
+
 def main():
     names = snapshot_names()
     if not names:
@@ -590,17 +678,22 @@ def main():
             break
 
         print("Snapshot 2D {}/{}: {}".format(index + 1, len(selected), name))
+        new_ids = []
         try:
             if not restore_snapshot(name):
                 skipped.append("{} (could not restore)".format(name))
                 continue
             sc.doc.Views.Redraw()
             Rhino.RhinoApp.Wait()
-            viewport = active_viewport()
-            if viewport is None:
-                skipped.append("{} (no active view)".format(name))
+            if select_all_for_make2d() < 1:
+                skipped.append("{} (nothing visible to draw)".format(name))
                 continue
-            items = project_view(viewport)
+            before = set(object_ids())
+            if not run_make2d():
+                skipped.append("{} (Make2D did not finish)".format(name))
+                continue
+            new_ids = [obj_id for obj_id in object_ids() if obj_id not in before]
+            items = curves_from_objects(new_ids)
             if not items:
                 skipped.append("{} (no 2D curves)".format(name))
                 continue
@@ -614,6 +707,9 @@ def main():
             exported.append(filename)
         except Exception as exc:
             skipped.append("{} ({})".format(name, exc))
+        finally:
+            delete_objects(new_ids)
+            rs.UnselectAllObjects()
 
     sc.doc.Views.Redraw()
 
@@ -626,8 +722,7 @@ def main():
         "Folder:",
         folder,
         "",
-        "Each file matches the view stored in that snapshot.",
-        "The drawing keeps the proportions you see on screen.",
+        "Each file is the Make2D of the view stored in that snapshot.",
         "PDF lines are vectors, so they stay sharp in InDesign.",
         "The model is left on the last snapshot that was restored.",
     ]

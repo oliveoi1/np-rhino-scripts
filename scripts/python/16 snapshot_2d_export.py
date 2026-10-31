@@ -723,6 +723,8 @@ def ensure_comic_mode():
     try:
         attrs = source.DisplayAttributes
         black = System.Drawing.Color.Black
+        edge = int(12 * COMIC_SUPERSAMPLE)
+        naked = int(18 * COMIC_SUPERSAMPLE)
         for prop, value in (
             ("ShowSurfaceEdge", True),
             ("ShowSurfaceNakedEdge", True),
@@ -732,8 +734,12 @@ def ensure_comic_mode():
             ("SurfaceEdgeColor", black),
             ("SurfaceNakedEdgeColor", black),
             ("MeshNakedEdgeColor", black),
-            ("SurfaceEdgeThicknessScale", 2.0),
-            ("SurfaceNakedEdgeThicknessScale", 2.5),
+            ("SurfaceEdgeThickness", edge),
+            ("SurfaceNakedEdgeThickness", naked),
+            ("MeshNakedEdgeThickness", naked),
+            ("MeshEdgeThickness", edge),
+            ("SurfaceEdgeThicknessScale", float(edge)),
+            ("SurfaceNakedEdgeThicknessScale", float(naked)),
         ):
             try:
                 setattr(attrs, prop, value)

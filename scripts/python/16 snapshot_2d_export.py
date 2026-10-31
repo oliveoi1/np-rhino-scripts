@@ -11,6 +11,7 @@ import os
 import Rhino
 import System
 import System.Drawing
+import System.Runtime.InteropServices
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
@@ -751,6 +752,115 @@ def ensure_comic_mode():
     return mode
 
 
+def ink_black_lines(bitmap):
+    """Turn the visible edges into a black outline thick enough to read on the panels."""
+    width = bitmap.Width
+    height = bitmap.Height
+    if width < 8 or height < 8:
+        return bitmap
+    rect = System.Drawing.Rectangle(0, 0, width, height)
+    pixel_format = System.Drawing.Imaging.PixelFormat.Format32bppArgb
+    source = bitmap
+    if bitmap.PixelFormat != pixel_format:
+        source = System.Drawing.Bitmap(width, height, pixel_format)
+        graphics = System.Drawing.Graphics.FromImage(source)
+        graphics.DrawImage(bitmap, 0, 0, width, height)
+        graphics.Dispose()
+    data = source.LockBits(
+        rect,
+        System.Drawing.Imaging.ImageLockMode.ReadWrite,
+        pixel_format,
+    )
+    try:
+        stride = data.Stride
+        count = stride * height
+        buffer = System.Array.CreateInstance(System.Byte, count)
+        System.Runtime.InteropServices.Marshal.Copy(data.Scan0, buffer, 0, count)
+        total = width * height
+        lum = bytearray(total)
+        for y_value in range(height):
+            row = y_value * stride
+            base = y_value * width
+            for x_value in range(width):
+                pixel = row + (x_value * 4)
+                blue = buffer[pixel]
+                green = buffer[pixel + 1]
+                red = buffer[pixel + 2]
+                lum[base + x_value] = (red * 3 + green * 6 + blue) // 10
+        threshold = 36
+        edge = bytearray(total)
+        for y_value in range(1, height - 1):
+            row = y_value * width
+            for x_value in range(1, width - 1):
+                center = lum[row + x_value]
+                contrast = max(
+                    abs(center - lum[row + x_value + 1]),
+                    abs(center - lum[row + width + x_value]),
+                    abs(center - lum[row + x_value - 1]),
+                    abs(center - lum[row - width + x_value]),
+                )
+                if contrast >= threshold:
+                    edge[row + x_value] = 1
+        keep = bytearray(total)
+        for y_value in range(1, height - 1):
+            row = y_value * width
+            for x_value in range(1, width - 1):
+                if not edge[row + x_value]:
+                    continue
+                neighbors = (
+                    edge[row - width + x_value - 1] + edge[row - width + x_value] + edge[row - width + x_value + 1]
+                    + edge[row + x_value - 1] + edge[row + x_value] + edge[row + x_value + 1]
+                    + edge[row + width + x_value - 1] + edge[row + width + x_value] + edge[row + width + x_value + 1]
+                )
+                if neighbors >= 3:
+                    keep[row + x_value] = 1
+        radius = max(4, width // 700)
+        horizontal = bytearray(total)
+        for y_value in range(height):
+            row = y_value * width
+            count = 0
+            for x_value in range(min(width, radius + 1)):
+                count += keep[row + x_value]
+            for x_value in range(width):
+                if count:
+                    horizontal[row + x_value] = 1
+                remove_at = x_value - radius
+                if remove_at >= 0:
+                    count -= keep[row + remove_at]
+                add_at = x_value + radius + 1
+                if add_at < width:
+                    count += keep[row + add_at]
+        inked = bytearray(total)
+        for x_value in range(width):
+            count = 0
+            for y_value in range(min(height, radius + 1)):
+                count += horizontal[(y_value * width) + x_value]
+            for y_value in range(height):
+                if count:
+                    inked[(y_value * width) + x_value] = 1
+                remove_at = y_value - radius
+                if remove_at >= 0:
+                    count -= horizontal[(remove_at * width) + x_value]
+                add_at = y_value + radius + 1
+                if add_at < height:
+                    count += horizontal[(add_at * width) + x_value]
+        for y_value in range(height):
+            row = y_value * stride
+            base = y_value * width
+            for x_value in range(width):
+                if not inked[base + x_value]:
+                    continue
+                pixel = row + (x_value * 4)
+                buffer[pixel] = 0
+                buffer[pixel + 1] = 0
+                buffer[pixel + 2] = 0
+                buffer[pixel + 3] = 255
+        System.Runtime.InteropServices.Marshal.Copy(buffer, 0, data.Scan0, count)
+    finally:
+        source.UnlockBits(data)
+    return source
+
+
 def render_snapshot(path, style):
     view = sc.doc.Views.ActiveView
     if view is None:
@@ -786,6 +896,11 @@ def render_snapshot(path, style):
             bitmap = capture_view_bitmap(view, pixel_width, pixel_height, 0)
         if not bitmap_has_content(bitmap):
             raise RuntimeError("view came out black")
+        if style == "cartoon":
+            inked = ink_black_lines(bitmap)
+            if inked is not bitmap:
+                bitmap.Dispose()
+                bitmap = inked
         bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
         bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png)
         return os.path.isfile(path) and os.path.getsize(path) > 1

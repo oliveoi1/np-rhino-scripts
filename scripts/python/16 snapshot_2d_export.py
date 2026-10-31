@@ -24,6 +24,7 @@ FORMATS = [
 
 RENDER_LONG_EDGE = 4800
 RENDER_DPI = 300.0
+RENDER_PASSES = 100
 
 LAYER_NAME = "2d"
 PAGE_WIDTH_IN = 16.0
@@ -639,12 +640,82 @@ def render_pixel_size(viewport):
     return pixel_width, pixel_height
 
 
-def use_rendered_display(view):
-    rendered = Rhino.Display.DisplayModeDescription.FindByName("Rendered")
-    if rendered is not None:
-        view.ActiveViewport.DisplayMode = rendered
+def set_display_mode(view, mode_name):
+    mode = Rhino.Display.DisplayModeDescription.FindByName(mode_name)
+    if mode is None:
+        return False
+    view.ActiveViewport.DisplayMode = mode
     view.Redraw()
     Rhino.RhinoApp.Wait()
+    return True
+
+
+def capture_view_bitmap(view, pixel_width, pixel_height, passes):
+    capture = Rhino.Display.ViewCapture()
+    capture.Width = int(pixel_width)
+    capture.Height = int(pixel_height)
+    for prop, value in (
+        ("ScaleScreenItems", False),
+        ("DrawAxes", False),
+        ("DrawGrid", False),
+        ("DrawGridAxes", False),
+        ("TransparentBackground", False),
+        ("RealtimeRenderPasses", int(passes)),
+    ):
+        try:
+            setattr(capture, prop, value)
+        except Exception:
+            pass
+    view.Redraw()
+    Rhino.RhinoApp.Wait()
+    bitmap = None
+    try:
+        bitmap = capture.CaptureToBitmap(view)
+    except Exception:
+        try:
+            bitmap = capture.CaptureToBitmap(view.ActiveViewport)
+        except Exception:
+            bitmap = None
+    if passes or bitmap_has_content(bitmap):
+        return bitmap
+    if bitmap is not None:
+        bitmap.Dispose()
+    try:
+        return view.CaptureToBitmap(System.Drawing.Size(int(pixel_width), int(pixel_height)))
+    except Exception:
+        return None
+
+
+def render_snapshot(path):
+    view = sc.doc.Views.ActiveView
+    if view is None:
+        raise RuntimeError("no active view")
+    pixel_width, pixel_height = render_pixel_size(view.ActiveViewport)
+    previous_mode = view.ActiveViewport.DisplayMode
+    bitmap = None
+    try:
+        if set_display_mode(view, "Raytraced"):
+            print("Raytracing snapshot, {} passes...".format(RENDER_PASSES))
+            bitmap = capture_view_bitmap(view, pixel_width, pixel_height, RENDER_PASSES)
+        if not bitmap_has_content(bitmap):
+            if bitmap is not None:
+                bitmap.Dispose()
+                bitmap = None
+            set_display_mode(view, "Rendered")
+            bitmap = capture_view_bitmap(view, pixel_width, pixel_height, 0)
+        if not bitmap_has_content(bitmap):
+            raise RuntimeError("render came out black")
+        bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
+        bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png)
+        return os.path.isfile(path) and os.path.getsize(path) > 1
+    finally:
+        if bitmap is not None:
+            bitmap.Dispose()
+        try:
+            view.ActiveViewport.DisplayMode = previous_mode
+            view.Redraw()
+        except Exception:
+            pass
 
 
 def bitmap_has_content(bitmap):
@@ -664,80 +735,6 @@ def bitmap_has_content(bitmap):
         if color.R > 8 or color.G > 8 or color.B > 8:
             return True
     return False
-
-
-def capture_view_bitmap(view, pixel_width, pixel_height):
-    capture = Rhino.Display.ViewCapture()
-    capture.Width = int(pixel_width)
-    capture.Height = int(pixel_height)
-    for prop, value in (
-        ("ScaleScreenItems", False),
-        ("DrawAxes", False),
-        ("DrawGrid", False),
-        ("DrawGridAxes", False),
-        ("TransparentBackground", False),
-    ):
-        try:
-            setattr(capture, prop, value)
-        except Exception:
-            pass
-    view.Redraw()
-    Rhino.RhinoApp.Wait()
-    bitmap = None
-    try:
-        bitmap = capture.CaptureToBitmap(view)
-    except Exception:
-        try:
-            bitmap = capture.CaptureToBitmap(view.ActiveViewport)
-        except Exception:
-            bitmap = None
-    if bitmap_has_content(bitmap):
-        return bitmap
-    if bitmap is not None:
-        bitmap.Dispose()
-    try:
-        return view.CaptureToBitmap(System.Drawing.Size(int(pixel_width), int(pixel_height)))
-    except Exception:
-        return None
-
-
-def render_snapshot(path):
-    view = sc.doc.Views.ActiveView
-    if view is None:
-        raise RuntimeError("no active view")
-    pixel_width, pixel_height = render_pixel_size(view.ActiveViewport)
-    sizes = (
-        (pixel_width, pixel_height),
-        (max(1, pixel_width // 2), max(1, pixel_height // 2)),
-    )
-    previous_mode = view.ActiveViewport.DisplayMode
-    bitmap = None
-    try:
-        for width, height in sizes:
-            bitmap = capture_view_bitmap(view, width, height)
-            if bitmap_has_content(bitmap):
-                break
-            if bitmap is not None:
-                bitmap.Dispose()
-                bitmap = None
-        if bitmap is None or not bitmap_has_content(bitmap):
-            use_rendered_display(view)
-            view.Redraw()
-            Rhino.RhinoApp.Wait()
-            bitmap = capture_view_bitmap(view, pixel_width, pixel_height)
-        if not bitmap_has_content(bitmap):
-            raise RuntimeError("render came out black")
-        bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
-        bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png)
-        return os.path.isfile(path) and os.path.getsize(path) > 1
-    finally:
-        if bitmap is not None:
-            bitmap.Dispose()
-        try:
-            view.ActiveViewport.DisplayMode = previous_mode
-            view.Redraw()
-        except Exception:
-            pass
 
 
 def delete_objects(obj_ids):
@@ -847,8 +844,8 @@ def main():
         "",
     ]
     if extension == ".png":
-        lines.append("Each file is a 300 dpi render of that snapshot, with materials.")
-        lines.append("The long edge is {} pixels.".format(RENDER_LONG_EDGE))
+        lines.append("Each file is a raytraced render of that snapshot, with materials.")
+        lines.append("The long edge is {} pixels at 300 dpi. Raytracing takes longer than a viewport capture.".format(RENDER_LONG_EDGE))
     else:
         lines.append("Each file is the Make2D of the view stored in that snapshot.")
         lines.append("PDF lines are vectors, so they stay sharp in InDesign.")

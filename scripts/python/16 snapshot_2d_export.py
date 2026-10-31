@@ -20,13 +20,15 @@ FORMATS = [
     ("EPS (.eps)", ".eps", "lines"),
     ("PDF (.pdf)", ".pdf", "lines"),
     ("Shaded view, high resolution (.png)", ".png", "shaded"),
-    ("Cartoon (.png)", ".png", "cartoon"),
+    ("Snapshot view (.png)", ".png", "cartoon"),
 ]
 
 RENDER_LONG_EDGE = 4800
 RENDER_DPI = 300.0
 RENDER_SUPERSAMPLE = 2
-COMIC_CAPTURE_SCALE = 2
+SNAPSHOT_MODE_NAME = "Snapshots"
+SNAPSHOT_EDGE_PIXELS = 3
+SNAPSHOT_CAPTURE_SCALE = 2
 
 LAYER_NAME = "2d"
 PAGE_WIDTH_IN = 16.0
@@ -688,6 +690,97 @@ def capture_view_bitmap(view, pixel_width, pixel_height, passes, scale_screen=Fa
         return None
 
 
+def display_enum(enum_name, member_name):
+    enum_type = getattr(Rhino.Display.DisplayPipelineAttributes, enum_name, None)
+    if enum_type is None:
+        return None
+    return getattr(enum_type, member_name, None)
+
+
+def assign_display(attrs, prop, value):
+    if value is None:
+        return
+    try:
+        setattr(attrs, prop, value)
+    except Exception:
+        pass
+
+
+def configure_snapshot_mode(mode, source):
+    """Rendered color, no cast shadows, and the edge width used for snapshot pictures."""
+    attrs = source.DisplayAttributes
+    black = System.Drawing.Color.Black
+    single = display_enum("SurfaceEdgeColorUse", "SingleColorForAll")
+    naked_single = display_enum("SurfaceNakedEdgeColorUse", "SingleColorForAll")
+    pixels = display_enum("SurfaceThicknessUse", "Pixels")
+    naked_pixels = display_enum("SurfaceNakedEdgeThicknessUse", "Pixels")
+    edge = int(SNAPSHOT_EDGE_PIXELS)
+    for prop, value in (
+        ("ShowSurfaceEdges", True),
+        ("ShowSurfaceEdge", True),
+        ("ShowSurfaceNakedEdge", True),
+        ("ShowMeshEdges", True),
+        ("ShowMeshNakedEdges", True),
+        ("CastShadows", False),
+        ("ShadowsOn", False),
+        ("SurfaceEdgeColor", black),
+        ("SurfaceNakedEdgeColor", black),
+        ("MeshEdgeColor", black),
+        ("MeshNakedEdgeColor", black),
+        ("SurfaceEdgeColorUsage", single),
+        ("SurfaceNakedEdgeColorUsage", naked_single),
+        ("SurfaceEdgeColorReduction", 0),
+        ("SurfaceEdgeColorReductionPercent", 0),
+        ("SurfaceEdgeThickness", edge),
+        ("SurfaceNakedEdgeThickness", edge),
+        ("MeshEdgeThickness", edge),
+        ("MeshNakedEdgeThickness", edge),
+    ):
+        assign_display(attrs, prop, value)
+    if pixels is not None:
+        try:
+            attrs.SetSurfaceEdgeThicknessUsage(pixels)
+        except Exception:
+            pass
+    if naked_pixels is not None:
+        try:
+            attrs.SetSurfaceNakedEdgeThicknessUsage(naked_pixels)
+        except Exception:
+            pass
+    mode.DisplayAttributes = attrs
+
+
+def ensure_snapshot_mode():
+    """Create the Snapshots display mode once. Later edits in the view options are kept."""
+    old_mode = Rhino.Display.DisplayModeDescription.FindByName("NP Comic")
+    if old_mode is not None:
+        try:
+            Rhino.Display.DisplayModeDescription.DeleteDisplayMode(old_mode.Id)
+        except Exception:
+            pass
+    mode = Rhino.Display.DisplayModeDescription.FindByName(SNAPSHOT_MODE_NAME)
+    if mode is not None:
+        return mode
+    source = Rhino.Display.DisplayModeDescription.FindByName("Rendered")
+    if source is None:
+        return None
+    try:
+        added = Rhino.Display.DisplayModeDescription.AddDisplayMode(SNAPSHOT_MODE_NAME)
+    except Exception:
+        added = None
+    if added is not None and not isinstance(added, bool):
+        mode = added
+    else:
+        mode = Rhino.Display.DisplayModeDescription.FindByName(SNAPSHOT_MODE_NAME)
+    if mode is None:
+        return source
+    try:
+        configure_snapshot_mode(mode, source)
+    except Exception:
+        return mode
+    return mode
+
+
 def downscale_bitmap(source, width, height):
     result = System.Drawing.Bitmap(int(width), int(height))
     result.SetResolution(RENDER_DPI, RENDER_DPI)
@@ -713,7 +806,10 @@ def render_snapshot(path, style):
     bitmap = None
     try:
         if style == "cartoon":
-            scale = COMIC_CAPTURE_SCALE
+            mode = ensure_snapshot_mode()
+            if mode is not None:
+                view.ActiveViewport.DisplayMode = mode
+            scale = SNAPSHOT_CAPTURE_SCALE
             scale_screen = True
         else:
             set_display_mode(view, "Shaded")
@@ -888,7 +984,8 @@ def main():
         "",
     ]
     if style == "cartoon":
-        lines.append("Each file is that snapshot view, with the display mode already set in the window.")
+        lines.append("Each file uses the Snapshots display mode.")
+        lines.append("Change that mode in Options, View, Display Modes, and the next export follows it.")
         lines.append("The long edge is {} pixels at 300 dpi.".format(RENDER_LONG_EDGE))
     elif style == "shaded":
         lines.append("Each file is a high-resolution shaded view of that snapshot.")

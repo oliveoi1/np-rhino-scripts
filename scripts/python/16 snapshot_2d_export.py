@@ -1,10 +1,9 @@
 """
 Make a 2D drawing of the view stored in each chosen snapshot and export it.
 
-Uses Make2D with Projection set to View, so only the snapshot's current
-view is drawn. Properties come from the input objects, with tangent edges,
-scene silhouettes, no hidden lines, grouped output, and layer name "2d".
-The 2D curves are removed from the model after each file is written.
+The drawing is projected the way that view looks on screen, including
+perspective. Tangent edges and scene silhouettes are included. Hidden
+lines are not. The 2D curves are not added to the model.
 """
 
 import os
@@ -25,6 +24,8 @@ LAYER_NAME = "2d"
 PAGE_WIDTH_IN = 16.0
 PAGE_HEIGHT_IN = 10.0
 PAGE_MARGIN_IN = 0.5
+SILHOUETTE_NONE = getattr(Rhino.Geometry.SilhouetteType, "None")
+SILHOUETTE_TANGENT = getattr(Rhino.Geometry.SilhouetteType, "Tangent", None)
 
 
 def snapshot_names():
@@ -49,20 +50,82 @@ def restore_snapshot(name):
     return bool(ok)
 
 
-def is_output_layer(layer_index):
+def active_viewport():
+    view = sc.doc.Views.ActiveView
+    if view is None:
+        return None
+    viewport = view.ActiveViewport
+    try:
+        if viewport.Size.Width < 2 or viewport.Size.Height < 2:
+            return None
+    except Exception:
+        return None
+    return viewport
+
+
+def layer_is_visible(layer_index):
     try:
         layer = sc.doc.Layers[layer_index]
     except Exception:
-        return False
-    if layer is None:
-        return False
-    full = layer.FullPath or ""
-    return full == LAYER_NAME or full.startswith(LAYER_NAME + "::")
+        return True
+    for _step in range(32):
+        if layer is None or not layer.IsVisible:
+            return False
+        parent_id = layer.ParentLayerId
+        if parent_id == System.Guid.Empty:
+            return True
+        parent = sc.doc.Layers.FindId(parent_id)
+        if isinstance(parent, int):
+            if parent < 0:
+                return True
+            layer = sc.doc.Layers[parent]
+        else:
+            layer = parent
+    return True
 
 
-def select_source_objects():
-    rs.UnselectAllObjects()
-    count = 0
+def append_drawable(obj, extra_xform, bucket, depth):
+    if obj is None or depth > 16 or obj.IsDeleted:
+        return
+    try:
+        if obj.IsHidden:
+            return
+    except Exception:
+        pass
+    try:
+        if not layer_is_visible(obj.Attributes.LayerIndex):
+            return
+    except Exception:
+        pass
+    geom = obj.Geometry
+    if geom is None:
+        return
+    duplicate = geom.Duplicate()
+    if duplicate is None:
+        return
+    geom = duplicate
+    if isinstance(geom, Rhino.Geometry.InstanceReferenceGeometry):
+        xform = geom.Xform
+        if extra_xform is not None:
+            xform = extra_xform * geom.Xform
+        idef = sc.doc.InstanceDefinitions.FindId(geom.ParentIdefId)
+        if idef is None:
+            return
+        try:
+            members = idef.GetObjects()
+        except Exception:
+            members = None
+        if not members:
+            return
+        for member in members:
+            append_drawable(member, xform, bucket, depth + 1)
+        return
+    xform = extra_xform if extra_xform is not None else Rhino.Geometry.Transform.Identity
+    bucket.append((geom, xform))
+
+
+def add_drawable_geometry(parameters):
+    bucket = []
     for obj in sc.doc.Objects:
         if obj is None or obj.IsDeleted:
             continue
@@ -70,69 +133,123 @@ def select_source_objects():
             selectable = obj.IsSelectable(True, False, False, False)
         except Exception:
             selectable = False
-        if not selectable or is_output_layer(obj.Attributes.LayerIndex):
+        if not selectable:
             continue
-        obj.Select(True)
-        count += 1
-    return count
+        append_drawable(obj, None, bucket, 0)
+    added = 0
+    for geom, xform in bucket:
+        try:
+            ok = parameters.AddGeometry(geom, xform, "snapshot")
+        except Exception:
+            ok = False
+        if ok:
+            added += 1
+    return added
 
 
-def object_ids():
-    found = []
-    for obj in sc.doc.Objects:
-        if obj is not None and not obj.IsDeleted:
-            found.append(obj.Id)
-    return found
+def screen_transform(viewport):
+    xform = viewport.GetTransform(
+        Rhino.DocObjects.CoordinateSystem.World,
+        Rhino.DocObjects.CoordinateSystem.Screen,
+    )
+    height = float(viewport.Size.Height)
+    return xform, height
 
 
-def run_make2d():
-    # Projection=View draws only the active view. Restoring the snapshot
-    # first makes that view the one on screen.
-    script = " ".join([
-        "_-Make2D",
-        "_Layout=_View",
-        "_Properties=_FromInputObjects",
-        "_ShowTangents=_Yes",
-        "_CreateHiddenLines=_No",
-        "_CreateSceneSilhouette=_Yes",
-        "_CreateClippingPlaneIntersections=_No",
-        "_ShowViewRectangle=_No",
-        "_GroupOutput=_Yes",
-        '_LayerName "{}"'.format(LAYER_NAME),
-        "_Enter",
-    ])
-    rs.Command(script, echo=False)
-    Rhino.RhinoApp.Wait()
+def sample_points(curve):
     try:
-        return int(rs.LastCommandResult()) == 0
+        ok, polyline = curve.TryGetPolyline()
     except Exception:
-        return bool(rs.LastCommandResult() == 0)
+        ok, polyline = False, None
+    if ok and polyline is not None and len(polyline) >= 2:
+        return list(polyline)
+    try:
+        length = curve.GetLength()
+    except Exception:
+        length = 0.0
+    count = 12
+    if length > 0.0:
+        count = int(length / max(sc.doc.ModelAbsoluteTolerance * 10.0, 0.05))
+        count = max(8, min(count, 80))
+    parameters = curve.DivideByCount(count, True)
+    if not parameters:
+        return [curve.PointAtStart, curve.PointAtEnd]
+    return [curve.PointAt(parameter) for parameter in parameters]
 
 
-def drawing_bounds(object_ids_to_measure):
-    box = Rhino.Geometry.BoundingBox.Empty
-    for obj_id in object_ids_to_measure:
-        rhobj = sc.doc.Objects.FindId(obj_id)
-        if rhobj is None or rhobj.Geometry is None:
-            continue
-        box.Union(rhobj.Geometry.GetBoundingBox(True))
-    return box
-
-
-def fit_to_page(box):
-    """Scale model-unit drawing geometry so the whole sheet fits a tabloid page."""
-    width = box.Max.X - box.Min.X
-    height = box.Max.Y - box.Min.Y
-    if width <= 1e-9 or height <= 1e-9:
+def map_to_screen(point, xform):
+    x_value = point.X
+    y_value = point.Y
+    z_value = point.Z
+    screen_x = xform.M00 * x_value + xform.M01 * y_value + xform.M02 * z_value + xform.M03
+    screen_y = xform.M10 * x_value + xform.M11 * y_value + xform.M12 * z_value + xform.M13
+    weight = xform.M30 * x_value + xform.M31 * y_value + xform.M32 * z_value + xform.M33
+    if weight < 1e-9:
         return None
-    to_inches = Rhino.RhinoMath.UnitScale(sc.doc.ModelUnitSystem, Rhino.UnitSystem.Inches)
-    usable_w = PAGE_WIDTH_IN - (2.0 * PAGE_MARGIN_IN)
-    usable_h = PAGE_HEIGHT_IN - (2.0 * PAGE_MARGIN_IN)
-    scale = min(usable_w / (width * to_inches), usable_h / (height * to_inches))
-    move = Rhino.Geometry.Transform.Translation(-box.Min.X, -box.Min.Y, -box.Min.Z)
-    scale_xform = Rhino.Geometry.Transform.Scale(Rhino.Geometry.Point3d.Origin, scale * to_inches)
-    margin = Rhino.Geometry.Transform.Translation(PAGE_MARGIN_IN, PAGE_MARGIN_IN, 0.0)
-    return margin * scale_xform * move
+    return screen_x / weight, screen_y / weight
+
+
+def project_curve(curve, xform, height):
+    projected = []
+    for point in sample_points(curve):
+        mapped = map_to_screen(point, xform)
+        if mapped is None:
+            continue
+        screen_x, screen_y = mapped
+        # Screen Y grows downward. PDF Y grows upward.
+        y_value = height - screen_y
+        if abs(screen_x) > 100000.0 or abs(y_value) > 100000.0:
+            continue
+        projected.append(Rhino.Geometry.Point3d(screen_x, y_value, 0.0))
+    if len(projected) < 2:
+        return None
+    return Rhino.Geometry.PolylineCurve(projected)
+
+
+def layer_for_segment(segment):
+    if segment.IsSceneSilhouette:
+        return LAYER_NAME + "::Visible::SceneSilhouetteCurves"
+    parent = segment.ParentCurve
+    if parent is not None and SILHOUETTE_TANGENT is not None:
+        if parent.SilhouetteType == SILHOUETTE_TANGENT:
+            return LAYER_NAME + "::Visible::Tangents"
+    return LAYER_NAME + "::Visible::Curves"
+
+
+def project_view(viewport):
+    parameters = Rhino.Geometry.HiddenLineDrawingParameters()
+    parameters.AbsoluteTolerance = sc.doc.ModelAbsoluteTolerance
+    parameters.Flatten = False
+    parameters.IncludeHiddenCurves = False
+    parameters.IncludeTangentEdges = True
+    parameters.SetViewport(viewport)
+    if add_drawable_geometry(parameters) < 1:
+        raise RuntimeError("no surfaces or meshes were visible")
+    drawing = Rhino.Geometry.HiddenLineDrawing.Compute(parameters, True)
+    if drawing is None:
+        return []
+    xform, height = screen_transform(viewport)
+    if xform is None or not xform.IsValid or height < 2.0:
+        raise RuntimeError("could not read the snapshot view")
+    projected = []
+    for segment in drawing.Segments:
+        if not segment or not segment.ParentCurve or not segment.CurveGeometry:
+            continue
+        if not segment_is_drawn(segment):
+            continue
+        curve = project_curve(segment.CurveGeometry, xform, height)
+        if curve is None:
+            continue
+        projected.append((curve, layer_for_segment(segment)))
+    return projected
+
+
+def segment_is_drawn(segment):
+    try:
+        name = str(segment.SegmentVisibility)
+    except Exception:
+        return True
+    return ("Hidden" not in name) and ("Clipped" not in name)
 
 
 def ensure_layer_path(doc, full_path):
@@ -158,32 +275,32 @@ def ensure_layer_path(doc, full_path):
     return index
 
 
-def copy_drawing(doc, object_ids_to_copy, xform):
+def page_transform(box):
+    """Scale screen-space curves onto the page without changing their proportions."""
+    width = box.Max.X - box.Min.X
+    height = box.Max.Y - box.Min.Y
+    if width <= 1e-9 or height <= 1e-9:
+        return None
+    usable_w = PAGE_WIDTH_PT - (2.0 * PAGE_MARGIN_PT)
+    usable_h = PAGE_HEIGHT_PT - (2.0 * PAGE_MARGIN_PT)
+    scale = min(usable_w / width, usable_h / height)
+    move = Rhino.Geometry.Transform.Translation(-box.Min.X, -box.Min.Y, -box.Min.Z)
+    scale_xform = Rhino.Geometry.Transform.Scale(Rhino.Geometry.Point3d.Origin, scale)
+    margin = Rhino.Geometry.Transform.Translation(PAGE_MARGIN_PT, PAGE_MARGIN_PT, 0.0)
+    return margin * scale_xform * move
+
+
+def add_curves(doc, items, xform):
     added = 0
-    for obj_id in object_ids_to_copy:
-        rhobj = sc.doc.Objects.FindId(obj_id)
-        if rhobj is None or rhobj.Geometry is None:
-            continue
-        geom = rhobj.Geometry.Duplicate()
+    for curve, full_path in items:
+        geom = curve.Duplicate()
         if geom is None:
             continue
         geom.Transform(xform)
-        try:
-            source_layer = sc.doc.Layers[rhobj.Attributes.LayerIndex]
-            full_path = source_layer.FullPath
-        except Exception:
-            full_path = LAYER_NAME
         layer_index = ensure_layer_path(doc, full_path)
         attributes = doc.CreateDefaultAttributes()
         if layer_index >= 0:
             attributes.LayerIndex = layer_index
-        try:
-            attributes.ColorSource = rhobj.Attributes.ColorSource
-            attributes.ObjectColor = rhobj.Attributes.ObjectColor
-            attributes.PlotWeightSource = rhobj.Attributes.PlotWeightSource
-            attributes.PlotWeight = rhobj.Attributes.PlotWeight
-        except Exception:
-            pass
         if doc.Objects.Add(geom, attributes) != System.Guid.Empty:
             added += 1
     return added
@@ -298,18 +415,107 @@ def export_drawing(doc, path, extension):
     return bool(doc.Export(path))
 
 
-def write_snapshot_file(object_ids_to_copy, path, extension):
-    box = drawing_bounds(object_ids_to_copy)
+def curve_points(curve):
+    try:
+        ok, polyline = curve.TryGetPolyline()
+    except Exception:
+        ok, polyline = False, None
+    if ok and polyline is not None and len(polyline) >= 2:
+        return [(point.X, point.Y) for point in polyline]
+    return []
+
+
+def build_vector_pdf(polylines, page_width, page_height, stroke_width):
+    """Write a one-page PDF whose lines are vector paths, in points, origin bottom-left."""
+    commands = []
+    for polyline in polylines:
+        if len(polyline) < 2:
+            continue
+        x0, y0 = polyline[0]
+        commands.append("{:.3f} {:.3f} m".format(x0, y0))
+        for x_value, y_value in polyline[1:]:
+            commands.append("{:.3f} {:.3f} l".format(x_value, y_value))
+        commands.append("S")
+    if not commands:
+        return None
+    content = "{:.3f} w\n1 J\n1 j\n0 0 0 RG\n".format(stroke_width)
+    content += "\n".join(commands) + "\n"
+    stream = content.encode("ascii")
+    header = b"%PDF-1.4\n"
+    page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w:.3f} {h:.3f}] /CropBox [0 0 {w:.3f} {h:.3f}] /Contents 4 0 R /Resources << >> >>".format(
+        w=page_width, h=page_height
+    )
+    bodies = [
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        "3 0 obj\n{}\nendobj\n".format(page),
+    ]
+    stream_obj = ("4 0 obj\n<< /Length {} >>\nstream\n".format(len(stream))).encode("ascii")
+    stream_obj += stream + b"endstream\nendobj\n"
+    chunks = [header]
+    offsets = [0]
+    position = len(header)
+    for body in bodies:
+        offsets.append(position)
+        piece = body.encode("ascii")
+        chunks.append(piece)
+        position += len(piece)
+    offsets.append(position)
+    chunks.append(stream_obj)
+    position += len(stream_obj)
+    xref_at = position
+    xref_lines = ["xref", "0 5", "0000000000 65535 f "]
+    for offset in offsets[1:]:
+        xref_lines.append("{:010d} 00000 n ".format(offset))
+    trailer = "\n".join(xref_lines)
+    trailer += "\ntrailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n".format(xref_at)
+    chunks.append(trailer.encode("ascii"))
+    return b"".join(chunks)
+
+
+def write_vector_pdf(curves, path):
+    polylines = []
+    for curve in curves:
+        points = curve_points(curve)
+        if len(points) >= 2:
+            polylines.append(points)
+    data = build_vector_pdf(polylines, PAGE_WIDTH_PT, PAGE_HEIGHT_PT, 0.5)
+    if not data or (b" m\n" not in data):
+        return False
+    with open(path, "wb") as handle:
+        handle.write(data)
+    return True
+
+
+def write_snapshot_file(items, path, extension):
+    box = Rhino.Geometry.BoundingBox.Empty
+    for curve, _full_path in items:
+        box.Union(curve.GetBoundingBox(True))
     if not box.IsValid:
         return False
-    xform = fit_to_page(box)
+    xform = page_transform(box)
     if xform is None:
         return False
+    fitted = []
+    for curve, full_path in items:
+        geom = curve.Duplicate()
+        if geom is None:
+            continue
+        geom.Transform(xform)
+        fitted.append((geom, full_path))
+    if not fitted:
+        return False
+    if extension == ".pdf":
+        return write_vector_pdf([curve for curve, _full_path in fitted], path)
     doc = Rhino.RhinoDoc.CreateHeadless(None)
     if doc is None:
         raise RuntimeError("Could not create a drawing document")
     try:
-        if copy_drawing(doc, object_ids_to_copy, xform) < 1:
+        try:
+            doc.ModelUnitSystem = Rhino.UnitSystem.Inches
+        except Exception:
+            pass
+        if add_curves(doc, fitted, Rhino.Geometry.Transform.Identity) < 1:
             return False
         if not export_drawing(doc, path, extension):
             return False
@@ -337,19 +543,6 @@ def unique_filename(used, name, extension):
         number += 1
     used.add(candidate.lower())
     return candidate + extension
-
-
-def delete_objects(obj_ids):
-    if not obj_ids:
-        return
-    try:
-        rs.DeleteObjects(obj_ids)
-    except Exception:
-        for obj_id in obj_ids:
-            try:
-                sc.doc.Objects.Delete(obj_id, True)
-            except Exception:
-                pass
 
 
 def main():
@@ -397,36 +590,30 @@ def main():
             break
 
         print("Snapshot 2D {}/{}: {}".format(index + 1, len(selected), name))
-        new_ids = []
         try:
             if not restore_snapshot(name):
                 skipped.append("{} (could not restore)".format(name))
                 continue
-            if select_source_objects() < 1:
-                skipped.append("{} (nothing visible to draw)".format(name))
+            sc.doc.Views.Redraw()
+            Rhino.RhinoApp.Wait()
+            viewport = active_viewport()
+            if viewport is None:
+                skipped.append("{} (no active view)".format(name))
                 continue
-
-            before = set(object_ids())
-            if not run_make2d():
-                skipped.append("{} (Make2D did not finish)".format(name))
-                continue
-            new_ids = [obj_id for obj_id in object_ids() if obj_id not in before]
-            if not new_ids:
+            items = project_view(viewport)
+            if not items:
                 skipped.append("{} (no 2D curves)".format(name))
                 continue
 
             filename = unique_filename(used_names, name, extension)
             path = os.path.join(folder, filename)
-            ok = write_snapshot_file(new_ids, path, extension)
+            ok = write_snapshot_file(items, path, extension)
             if not ok or not os.path.isfile(path) or os.path.getsize(path) < 1:
                 skipped.append("{} (export failed)".format(name))
                 continue
             exported.append(filename)
         except Exception as exc:
             skipped.append("{} ({})".format(name, exc))
-        finally:
-            delete_objects(new_ids)
-            rs.UnselectAllObjects()
 
     sc.doc.Views.Redraw()
 
@@ -439,8 +626,9 @@ def main():
         "Folder:",
         folder,
         "",
-        "Each file is only the view stored in that snapshot.",
-        "The drawing is fitted onto the page.",
+        "Each file matches the view stored in that snapshot.",
+        "The drawing keeps the proportions you see on screen.",
+        "PDF lines are vectors, so they stay sharp in InDesign.",
         "The model is left on the last snapshot that was restored.",
     ]
     if skipped:

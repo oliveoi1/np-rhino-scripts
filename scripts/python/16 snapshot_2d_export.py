@@ -51,6 +51,92 @@ def active_viewport():
     return view.ActiveViewport
 
 
+def layer_is_visible(layer_index):
+    try:
+        layer = sc.doc.Layers[layer_index]
+    except Exception:
+        return True
+    for _step in range(32):
+        if layer is None or not layer.IsVisible:
+            return False
+        parent_id = layer.ParentLayerId
+        if parent_id == System.Guid.Empty:
+            return True
+        parent = sc.doc.Layers.FindId(parent_id)
+        if isinstance(parent, int):
+            if parent < 0:
+                return True
+            layer = sc.doc.Layers[parent]
+        else:
+            layer = parent
+    return True
+
+
+def append_drawable(obj, extra_xform, bucket, depth):
+    """Collect curves, surfaces, and meshes, including geometry inside blocks."""
+    if obj is None or depth > 16 or obj.IsDeleted:
+        return
+    try:
+        if obj.IsHidden:
+            return
+    except Exception:
+        pass
+    try:
+        if not layer_is_visible(obj.Attributes.LayerIndex):
+            return
+    except Exception:
+        pass
+
+    geom = obj.Geometry
+    if geom is None:
+        return
+
+    if isinstance(geom, Rhino.Geometry.InstanceReferenceGeometry):
+        xform = geom.Xform
+        if extra_xform is not None:
+            xform = extra_xform * geom.Xform
+        idef = sc.doc.InstanceDefinitions.FindId(geom.ParentIdefId)
+        if idef is None:
+            return
+        try:
+            members = idef.GetObjects()
+        except Exception:
+            members = None
+        if not members:
+            return
+        for member in members:
+            append_drawable(member, xform, bucket, depth + 1)
+        return
+
+    xform = extra_xform if extra_xform is not None else Rhino.Geometry.Transform.Identity
+    bucket.append((geom, xform))
+
+
+def add_drawable_geometry(parameters):
+    bucket = []
+    for obj in sc.doc.Objects:
+        if obj is None or obj.IsDeleted:
+            continue
+        try:
+            selectable = obj.IsSelectable(True, False, False, False)
+        except Exception:
+            selectable = False
+        if not selectable:
+            continue
+        append_drawable(obj, None, bucket, 0)
+
+    added = 0
+    for geom, xform in bucket:
+        ok = False
+        try:
+            ok = parameters.AddGeometry(geom, xform, "snapshot")
+        except Exception:
+            ok = False
+        if ok:
+            added += 1
+    return added
+
+
 def collect_visible_curves(viewport):
     parameters = Rhino.Geometry.HiddenLineDrawingParameters()
     parameters.AbsoluteTolerance = sc.doc.ModelAbsoluteTolerance
@@ -59,17 +145,8 @@ def collect_visible_curves(viewport):
     parameters.IncludeTangentEdges = False
     parameters.SetViewport(viewport)
 
-    identity = Rhino.Geometry.Transform.Identity
-    for obj in sc.doc.Objects:
-        if obj is None or obj.IsDeleted:
-            continue
-        try:
-            selectable = obj.IsSelectable(True, False, False, False)
-        except Exception:
-            selectable = False
-        if not selectable or obj.Geometry is None:
-            continue
-        parameters.AddGeometry(obj.Geometry, identity)
+    if add_drawable_geometry(parameters) < 1:
+        raise RuntimeError("no surfaces or meshes were visible")
 
     drawing = Rhino.Geometry.HiddenLineDrawing.Compute(parameters, True)
     if drawing is None:

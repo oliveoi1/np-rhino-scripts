@@ -1,8 +1,10 @@
 """
-Make a 2D drawing of each chosen snapshot and export it.
+Make a third-angle 2D drawing of each chosen snapshot and export it.
 
-Restores the snapshot, draws the visible outlines from that view, and writes
-one file per snapshot. The 2D curves are not added to the model.
+Uses the same Make2D settings as the 2-D Drawing Options dialog:
+third-angle projection, properties from the input objects, tangent edges,
+scene silhouettes, no hidden lines, grouped output, layer name "2d".
+The 2D curves are removed from the model after each file is written.
 """
 
 import os
@@ -13,13 +15,16 @@ import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
 
-SILHOUETTE_NONE = getattr(Rhino.Geometry.SilhouetteType, "None")
-
 FORMATS = [
     ("Adobe Illustrator (.ai)", ".ai"),
     ("EPS (.eps)", ".eps"),
     ("PDF (.pdf)", ".pdf"),
 ]
+
+LAYER_NAME = "2d"
+PAGE_WIDTH_IN = 16.0
+PAGE_HEIGHT_IN = 10.0
+PAGE_MARGIN_IN = 0.5
 
 
 def snapshot_names():
@@ -44,76 +49,20 @@ def restore_snapshot(name):
     return bool(ok)
 
 
-def active_viewport():
-    view = sc.doc.Views.ActiveView
-    if view is None:
-        return None
-    return view.ActiveViewport
-
-
-def layer_is_visible(layer_index):
+def is_output_layer(layer_index):
     try:
         layer = sc.doc.Layers[layer_index]
     except Exception:
-        return True
-    for _step in range(32):
-        if layer is None or not layer.IsVisible:
-            return False
-        parent_id = layer.ParentLayerId
-        if parent_id == System.Guid.Empty:
-            return True
-        parent = sc.doc.Layers.FindId(parent_id)
-        if isinstance(parent, int):
-            if parent < 0:
-                return True
-            layer = sc.doc.Layers[parent]
-        else:
-            layer = parent
-    return True
+        return False
+    if layer is None:
+        return False
+    full = layer.FullPath or ""
+    return full == LAYER_NAME or full.startswith(LAYER_NAME + "::")
 
 
-def append_drawable(obj, extra_xform, bucket, depth):
-    """Collect curves, surfaces, and meshes, including geometry inside blocks."""
-    if obj is None or depth > 16 or obj.IsDeleted:
-        return
-    try:
-        if obj.IsHidden:
-            return
-    except Exception:
-        pass
-    try:
-        if not layer_is_visible(obj.Attributes.LayerIndex):
-            return
-    except Exception:
-        pass
-
-    geom = obj.Geometry
-    if geom is None:
-        return
-
-    if isinstance(geom, Rhino.Geometry.InstanceReferenceGeometry):
-        xform = geom.Xform
-        if extra_xform is not None:
-            xform = extra_xform * geom.Xform
-        idef = sc.doc.InstanceDefinitions.FindId(geom.ParentIdefId)
-        if idef is None:
-            return
-        try:
-            members = idef.GetObjects()
-        except Exception:
-            members = None
-        if not members:
-            return
-        for member in members:
-            append_drawable(member, xform, bucket, depth + 1)
-        return
-
-    xform = extra_xform if extra_xform is not None else Rhino.Geometry.Transform.Identity
-    bucket.append((geom, xform))
-
-
-def add_drawable_geometry(parameters):
-    bucket = []
+def select_source_objects():
+    rs.UnselectAllObjects()
+    count = 0
     for obj in sc.doc.Objects:
         if obj is None or obj.IsDeleted:
             continue
@@ -121,69 +70,168 @@ def add_drawable_geometry(parameters):
             selectable = obj.IsSelectable(True, False, False, False)
         except Exception:
             selectable = False
-        if not selectable:
+        if not selectable or is_output_layer(obj.Attributes.LayerIndex):
             continue
-        append_drawable(obj, None, bucket, 0)
+        obj.Select(True)
+        count += 1
+    return count
 
+
+def object_ids():
+    found = []
+    for obj in sc.doc.Objects:
+        if obj is not None and not obj.IsDeleted:
+            found.append(obj.Id)
+    return found
+
+
+def run_make2d():
+    # Matches the 2-D Drawing Options dialog. Third angle ignores the
+    # viewport camera and draws World Top, Front, and Right.
+    script = " ".join([
+        "_-Make2D",
+        "_Layout=_ThirdAngle",
+        "_Properties=_FromInputObjects",
+        "_ShowTangents=_Yes",
+        "_CreateHiddenLines=_No",
+        "_CreateSceneSilhouette=_Yes",
+        "_GroupOutput=_Yes",
+        '_LayerName "{}"'.format(LAYER_NAME),
+        "_Enter",
+    ])
+    rs.Command(script, echo=False)
+    Rhino.RhinoApp.Wait()
+    try:
+        return int(rs.LastCommandResult()) == 0
+    except Exception:
+        return bool(rs.LastCommandResult() == 0)
+
+
+def drawing_bounds(object_ids_to_measure):
+    box = Rhino.Geometry.BoundingBox.Empty
+    for obj_id in object_ids_to_measure:
+        rhobj = sc.doc.Objects.FindId(obj_id)
+        if rhobj is None or rhobj.Geometry is None:
+            continue
+        box.Union(rhobj.Geometry.GetBoundingBox(True))
+    return box
+
+
+def fit_to_page(box):
+    """Scale model-unit drawing geometry so the whole sheet fits a tabloid page."""
+    width = box.Max.X - box.Min.X
+    height = box.Max.Y - box.Min.Y
+    if width <= 1e-9 or height <= 1e-9:
+        return None
+    to_inches = Rhino.RhinoMath.UnitScale(sc.doc.ModelUnitSystem, Rhino.UnitSystem.Inches)
+    usable_w = PAGE_WIDTH_IN - (2.0 * PAGE_MARGIN_IN)
+    usable_h = PAGE_HEIGHT_IN - (2.0 * PAGE_MARGIN_IN)
+    scale = min(usable_w / (width * to_inches), usable_h / (height * to_inches))
+    move = Rhino.Geometry.Transform.Translation(-box.Min.X, -box.Min.Y, -box.Min.Z)
+    scale_xform = Rhino.Geometry.Transform.Scale(Rhino.Geometry.Point3d.Origin, scale * to_inches)
+    margin = Rhino.Geometry.Transform.Translation(PAGE_MARGIN_IN, PAGE_MARGIN_IN, 0.0)
+    return margin * scale_xform * move
+
+
+def ensure_layer_path(doc, full_path):
+    parent_index = -1
+    built = []
+    index = -1
+    for part in (full_path or LAYER_NAME).split("::"):
+        if not part:
+            continue
+        built.append(part)
+        path = "::".join(built)
+        index = doc.Layers.FindByFullPath(path, -1)
+        if index >= 0:
+            parent_index = index
+            continue
+        layer = Rhino.DocObjects.Layer()
+        layer.Name = part
+        layer.Color = System.Drawing.Color.Black
+        if parent_index >= 0:
+            layer.ParentLayerId = doc.Layers[parent_index].Id
+        index = doc.Layers.Add(layer)
+        parent_index = index
+    return index
+
+
+def copy_drawing(doc, object_ids_to_copy, xform):
     added = 0
-    for geom, xform in bucket:
-        ok = False
+    for obj_id in object_ids_to_copy:
+        rhobj = sc.doc.Objects.FindId(obj_id)
+        if rhobj is None or rhobj.Geometry is None:
+            continue
+        geom = rhobj.Geometry.Duplicate()
+        if geom is None:
+            continue
+        geom.Transform(xform)
         try:
-            ok = parameters.AddGeometry(geom, xform, "snapshot")
+            source_layer = sc.doc.Layers[rhobj.Attributes.LayerIndex]
+            full_path = source_layer.FullPath
         except Exception:
-            ok = False
-        if ok:
+            full_path = LAYER_NAME
+        layer_index = ensure_layer_path(doc, full_path)
+        attributes = doc.CreateDefaultAttributes()
+        if layer_index >= 0:
+            attributes.LayerIndex = layer_index
+        try:
+            attributes.ColorSource = rhobj.Attributes.ColorSource
+            attributes.ObjectColor = rhobj.Attributes.ObjectColor
+            attributes.PlotWeightSource = rhobj.Attributes.PlotWeightSource
+            attributes.PlotWeight = rhobj.Attributes.PlotWeight
+        except Exception:
+            pass
+        if doc.Objects.Add(geom, attributes) != System.Guid.Empty:
             added += 1
     return added
 
 
-def collect_visible_curves(viewport):
-    parameters = Rhino.Geometry.HiddenLineDrawingParameters()
-    parameters.AbsoluteTolerance = sc.doc.ModelAbsoluteTolerance
-    parameters.Flatten = True
-    parameters.IncludeHiddenCurves = False
-    parameters.IncludeTangentEdges = False
-    parameters.SetViewport(viewport)
-
-    if add_drawable_geometry(parameters) < 1:
-        raise RuntimeError("no surfaces or meshes were visible")
-
-    drawing = Rhino.Geometry.HiddenLineDrawing.Compute(parameters, True)
-    if drawing is None:
-        return [], []
-
-    silhouettes = []
-    curves = []
-    for segment in drawing.Segments:
-        if not segment or not segment.ParentCurve or not segment.CurveGeometry:
-            continue
-        if segment.ParentCurve.SilhouetteType == SILHOUETTE_NONE:
-            continue
-        if segment.SegmentVisibility != Rhino.Geometry.HiddenLineDrawingSegment.Visibility.Visible:
-            continue
-        curve = segment.CurveGeometry.DuplicateCurve()
-        if curve is None:
-            continue
-        if segment.IsSceneSilhouette:
-            silhouettes.append(curve)
-        else:
-            curves.append(curve)
-    return silhouettes, curves
+def apply_ai_units(options):
+    units = getattr(Rhino.FileIO.FileAiWriteOptions, "Units", None)
+    inches = getattr(units, "Inches", None) if units is not None else None
+    if inches is not None:
+        options.AiUnits = inches
 
 
-def move_to_origin(curves):
-    box = Rhino.Geometry.BoundingBox.Empty
-    for curve in curves:
-        box.Union(curve.GetBoundingBox(True))
+def export_drawing(doc, path, extension):
+    try:
+        doc.AdjustModelUnitSystem(Rhino.UnitSystem.Inches, False)
+    except Exception:
+        pass
+    if extension == ".ai":
+        options = Rhino.FileIO.FileAiWriteOptions()
+        options.PreserveModelScale = True
+        options.RhinoScale = 1.0
+        options.AIScale = 1.0
+        options.ExportViewBoundary = False
+        options.UseCMYK = False
+        try:
+            options.ExportHatchesAsSolidFills = True
+            options.OrderLayers = True
+        except Exception:
+            pass
+        apply_ai_units(options)
+        return bool(Rhino.FileIO.FileAi.Write(path, doc, options))
+    return bool(doc.Export(path))
+
+
+def write_snapshot_file(object_ids_to_copy, path, extension):
+    box = drawing_bounds(object_ids_to_copy)
     if not box.IsValid:
-        return
-    move = Rhino.Geometry.Transform.Translation(
-        -box.Min.X,
-        -box.Min.Y,
-        -box.Min.Z,
-    )
-    for curve in curves:
-        curve.Transform(move)
+        return False
+    xform = fit_to_page(box)
+    if xform is None:
+        return False
+    doc = Rhino.RhinoDoc.CreateHeadless(None)
+    if doc is None:
+        raise RuntimeError("Could not create a drawing document")
+    try:
+        if copy_drawing(doc, object_ids_to_copy, xform) < 1:
+            return False
+        return export_drawing(doc, path, extension)
+    finally:
+        doc.Dispose()
 
 
 def safe_filename(name):
@@ -205,88 +253,17 @@ def unique_filename(used, name, extension):
     return candidate + extension
 
 
-def add_layer(doc, name, parent_index):
-    layer = Rhino.DocObjects.Layer()
-    layer.Name = safe_filename(name)[:200]
-    layer.Color = System.Drawing.Color.Black
-    if parent_index is not None and parent_index >= 0:
-        layer.ParentLayerId = doc.Layers[parent_index].Id
-    return doc.Layers.Add(layer)
-
-
-def add_curves(doc, curves, layer_index):
-    attributes = doc.CreateDefaultAttributes()
-    if layer_index is not None and layer_index >= 0:
-        attributes.LayerIndex = layer_index
-    for curve in curves:
-        doc.Objects.AddCurve(curve, attributes)
-
-
-def apply_source_units(doc):
-    try:
-        doc.AdjustModelUnitSystem(sc.doc.ModelUnitSystem, False)
-    except Exception:
-        try:
-            doc.ModelUnitSystem = sc.doc.ModelUnitSystem
-        except Exception:
-            pass
-    try:
-        doc.ModelAbsoluteTolerance = sc.doc.ModelAbsoluteTolerance
-    except Exception:
-        pass
-
-
-def apply_ai_units(options):
-    names = {
-        Rhino.UnitSystem.Inches: "Inches",
-        Rhino.UnitSystem.Feet: "Feet",
-        Rhino.UnitSystem.Millimeters: "Millimeters",
-        Rhino.UnitSystem.Centimeters: "Centimeters",
-        Rhino.UnitSystem.Meters: "Meters",
-    }
-    unit_name = names.get(sc.doc.ModelUnitSystem)
-    if not unit_name:
+def delete_objects(obj_ids):
+    if not obj_ids:
         return
-    units = getattr(Rhino.FileIO.FileAiWriteOptions, "Units", None)
-    value = getattr(units, unit_name, None) if units is not None else None
-    if value is not None:
-        options.AiUnits = value
-
-
-def export_drawing(doc, path, extension):
-    if extension == ".ai":
-        options = Rhino.FileIO.FileAiWriteOptions()
-        options.PreserveModelScale = True
-        options.RhinoScale = 1.0
-        options.AIScale = 1.0
-        options.ExportViewBoundary = False
-        options.UseCMYK = False
-        try:
-            options.ExportHatchesAsSolidFills = True
-            options.OrderLayers = True
-        except Exception:
-            pass
-        apply_ai_units(options)
-        return bool(Rhino.FileIO.FileAi.Write(path, doc, options))
-    return bool(doc.Export(path))
-
-
-def write_snapshot_file(silhouettes, curves, path, extension):
-    doc = Rhino.RhinoDoc.CreateHeadless(None)
-    if doc is None:
-        raise RuntimeError("Could not create a drawing document")
     try:
-        apply_source_units(doc)
-        parent_index = add_layer(doc, "Snapshot 2D", None)
-        silhouette_index = add_layer(doc, "Silhouettes", parent_index)
-        curve_index = add_layer(doc, "Curves", parent_index)
-        add_curves(doc, silhouettes, silhouette_index)
-        add_curves(doc, curves, curve_index)
-        if doc.Objects.Count < 1:
-            return False
-        return export_drawing(doc, path, extension)
-    finally:
-        doc.Dispose()
+        rs.DeleteObjects(obj_ids)
+    except Exception:
+        for obj_id in obj_ids:
+            try:
+                sc.doc.Objects.Delete(obj_id, True)
+            except Exception:
+                pass
 
 
 def main():
@@ -334,38 +311,36 @@ def main():
             break
 
         print("Snapshot 2D {}/{}: {}".format(index + 1, len(selected), name))
-        if not restore_snapshot(name):
-            skipped.append("{} (could not restore)".format(name))
-            continue
-
-        viewport = active_viewport()
-        if viewport is None:
-            skipped.append("{} (no active view)".format(name))
-            continue
-
+        new_ids = []
         try:
-            silhouettes, curves = collect_visible_curves(viewport)
+            if not restore_snapshot(name):
+                skipped.append("{} (could not restore)".format(name))
+                continue
+            if select_source_objects() < 1:
+                skipped.append("{} (nothing visible to draw)".format(name))
+                continue
+
+            before = set(object_ids())
+            if not run_make2d():
+                skipped.append("{} (Make2D did not finish)".format(name))
+                continue
+            new_ids = [obj_id for obj_id in object_ids() if obj_id not in before]
+            if not new_ids:
+                skipped.append("{} (no 2D curves)".format(name))
+                continue
+
+            filename = unique_filename(used_names, name, extension)
+            path = os.path.join(folder, filename)
+            ok = write_snapshot_file(new_ids, path, extension)
+            if not ok or not os.path.isfile(path) or os.path.getsize(path) < 1:
+                skipped.append("{} (export failed)".format(name))
+                continue
+            exported.append(filename)
         except Exception as exc:
             skipped.append("{} ({})".format(name, exc))
-            continue
-
-        drawing = silhouettes + curves
-        if not drawing:
-            skipped.append("{} (no visible curves)".format(name))
-            continue
-
-        move_to_origin(drawing)
-        filename = unique_filename(used_names, name, extension)
-        path = os.path.join(folder, filename)
-        try:
-            ok = write_snapshot_file(silhouettes, curves, path, extension)
-        except Exception as exc:
-            skipped.append("{} ({})".format(name, exc))
-            continue
-        if not ok or not os.path.isfile(path) or os.path.getsize(path) < 1:
-            skipped.append("{} (export failed)".format(name))
-            continue
-        exported.append(filename)
+        finally:
+            delete_objects(new_ids)
+            rs.UnselectAllObjects()
 
     sc.doc.Views.Redraw()
 
@@ -378,6 +353,8 @@ def main():
         "Folder:",
         folder,
         "",
+        "Each file is a third-angle drawing: top, front, and right.",
+        "The whole sheet is fitted onto the page.",
         "The model is left on the last snapshot that was restored.",
     ]
     if skipped:

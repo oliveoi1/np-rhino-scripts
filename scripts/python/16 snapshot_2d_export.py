@@ -424,31 +424,68 @@ def export_drawing(doc, path, extension):
     return bool(doc.Export(path))
 
 
+def points_from_polyline(polyline):
+    return [(point.X, point.Y) for point in polyline]
+
+
 def curve_points(curve):
     try:
         ok, polyline = curve.TryGetPolyline()
     except Exception:
         ok, polyline = False, None
     if ok and polyline is not None and len(polyline) >= 2:
-        return [(point.X, point.Y) for point in polyline]
-    return []
+        return points_from_polyline(polyline)
+    converted = None
+    try:
+        converted = curve.ToPolyline(0.2, 0.05, 0.0, 0.0)
+    except Exception:
+        converted = None
+    if converted is not None:
+        try:
+            ok, polyline = converted.TryGetPolyline()
+        except Exception:
+            ok, polyline = False, None
+        if ok and polyline is not None and len(polyline) >= 2:
+            return points_from_polyline(polyline)
+        try:
+            if len(converted) >= 2:
+                return points_from_polyline(converted)
+        except Exception:
+            pass
+    points = sample_points(curve)
+    if len(points) < 2:
+        return []
+    return [(point.X, point.Y) for point in points]
 
 
-def build_vector_pdf(polylines, page_width, page_height, stroke_width):
+def append_polyline(commands, polyline):
+    x0, y0 = polyline[0]
+    commands.append("{:.3f} {:.3f} m".format(x0, y0))
+    for x_value, y_value in polyline[1:]:
+        commands.append("{:.3f} {:.3f} l".format(x_value, y_value))
+    commands.append("S")
+
+
+def build_vector_pdf(solid, hidden, page_width, page_height, stroke_width):
     """Write a one-page PDF whose lines are vector paths, in points, origin bottom-left."""
-    commands = []
-    for polyline in polylines:
-        if len(polyline) < 2:
-            continue
-        x0, y0 = polyline[0]
-        commands.append("{:.3f} {:.3f} m".format(x0, y0))
-        for x_value, y_value in polyline[1:]:
-            commands.append("{:.3f} {:.3f} l".format(x_value, y_value))
-        commands.append("S")
-    if not commands:
+    commands = [
+        "{:.3f} w".format(stroke_width),
+        "1 J",
+        "1 j",
+        "0 0 0 RG",
+        "[] 0 d",
+    ]
+    for polyline in solid:
+        if len(polyline) >= 2:
+            append_polyline(commands, polyline)
+    if hidden:
+        commands.append("[3 2] 0 d")
+        for polyline in hidden:
+            if len(polyline) >= 2:
+                append_polyline(commands, polyline)
+    if len(commands) < 6:
         return None
-    content = "{:.3f} w\n1 J\n1 j\n0 0 0 RG\n".format(stroke_width)
-    content += "\n".join(commands) + "\n"
+    content = "\n".join(commands) + "\n"
     stream = content.encode("ascii")
     header = b"%PDF-1.4\n"
     page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w:.3f} {h:.3f}] /CropBox [0 0 {w:.3f} {h:.3f}] /Contents 4 0 R /Resources << >> >>".format(
@@ -482,13 +519,18 @@ def build_vector_pdf(polylines, page_width, page_height, stroke_width):
     return b"".join(chunks)
 
 
-def write_vector_pdf(curves, path):
-    polylines = []
-    for curve in curves:
+def write_vector_pdf(items, path):
+    solid = []
+    hidden = []
+    for curve, full_path in items:
         points = curve_points(curve)
-        if len(points) >= 2:
-            polylines.append(points)
-    data = build_vector_pdf(polylines, PAGE_WIDTH_PT, PAGE_HEIGHT_PT, 0.5)
+        if len(points) < 2:
+            continue
+        if full_path and "Hidden" in full_path:
+            hidden.append(points)
+        else:
+            solid.append(points)
+    data = build_vector_pdf(solid, hidden, PAGE_WIDTH_PT, PAGE_HEIGHT_PT, 0.5)
     if not data or (b" m\n" not in data):
         return False
     with open(path, "wb") as handle:
@@ -515,7 +557,7 @@ def write_snapshot_file(items, path, extension):
     if not fitted:
         return False
     if extension == ".pdf":
-        return write_vector_pdf([curve for curve, _full_path in fitted], path)
+        return write_vector_pdf(fitted, path)
     doc = Rhino.RhinoDoc.CreateHeadless(None)
     if doc is None:
         raise RuntimeError("Could not create a drawing document")
@@ -596,7 +638,7 @@ def run_make2d():
         "_Layout=_View",
         "_Properties=_FromInputObjects",
         "_ShowTangents=_Yes",
-        "_CreateHiddenLines=_No",
+        "_CreateHiddenLines=_Yes",
         "_CreateSceneSilhouette=_Yes",
         "_CreateClippingPlaneIntersections=_No",
         "_ShowViewRectangle=_No",
@@ -922,6 +964,7 @@ def main():
     else:
         lines.append("Each file is the Make2D of the view stored in that snapshot.")
         lines.append("PDF lines are vectors, so they stay sharp in InDesign.")
+        lines.append("Visible edges are solid. Hidden edges are dashed.")
     lines.append("The model is left on the last snapshot that was restored.")
     if skipped:
         lines.append("")

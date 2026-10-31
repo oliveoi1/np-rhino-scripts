@@ -16,15 +16,18 @@ import scriptcontext as sc
 
 
 FORMATS = [
-    ("Adobe Illustrator (.ai)", ".ai"),
-    ("EPS (.eps)", ".eps"),
-    ("PDF (.pdf)", ".pdf"),
-    ("Shaded view, high resolution (.png)", ".png"),
+    ("Adobe Illustrator (.ai)", ".ai", "lines"),
+    ("EPS (.eps)", ".eps", "lines"),
+    ("PDF (.pdf)", ".pdf", "lines"),
+    ("Shaded view, high resolution (.png)", ".png", "shaded"),
+    ("Cartoon (.png)", ".png", "cartoon"),
 ]
 
 RENDER_LONG_EDGE = 4800
 RENDER_DPI = 300.0
 RENDER_SUPERSAMPLE = 2
+COMIC_SUPERSAMPLE = 3
+COMIC_MODE_NAME = "NP Comic"
 
 LAYER_NAME = "2d"
 PAGE_WIDTH_IN = 16.0
@@ -700,23 +703,72 @@ def downscale_bitmap(source, width, height):
     return result
 
 
-def render_snapshot(path):
-    """Flat shaded view: material color, no wood grain, no cast shadows."""
+def ensure_comic_mode():
+    """Flat material color with a heavy black outline. Built from Rendered so the panels keep their color."""
+    source = Rhino.Display.DisplayModeDescription.FindByName("Rendered")
+    if source is None:
+        return None
+    mode = Rhino.Display.DisplayModeDescription.FindByName(COMIC_MODE_NAME)
+    if mode is None:
+        try:
+            added = Rhino.Display.DisplayModeDescription.AddDisplayMode(COMIC_MODE_NAME)
+        except Exception:
+            added = None
+        if added is not None and not isinstance(added, bool):
+            mode = added
+        else:
+            mode = Rhino.Display.DisplayModeDescription.FindByName(COMIC_MODE_NAME)
+    if mode is None:
+        return source
+    try:
+        attrs = source.DisplayAttributes
+        black = System.Drawing.Color.Black
+        for prop, value in (
+            ("ShowSurfaceEdge", True),
+            ("ShowSurfaceNakedEdge", True),
+            ("ShowMeshNakedEdges", True),
+            ("FlatShade", True),
+            ("ShadingEnabled", True),
+            ("SurfaceEdgeColor", black),
+            ("SurfaceNakedEdgeColor", black),
+            ("MeshNakedEdgeColor", black),
+            ("SurfaceEdgeThicknessScale", 2.0),
+            ("SurfaceNakedEdgeThicknessScale", 2.5),
+        ):
+            try:
+                setattr(attrs, prop, value)
+            except Exception:
+                pass
+        mode.DisplayAttributes = attrs
+    except Exception:
+        return source
+    return mode
+
+
+def render_snapshot(path, style):
     view = sc.doc.Views.ActiveView
     if view is None:
         raise RuntimeError("no active view")
+    rs.UnselectAllObjects()
     pixel_width, pixel_height = render_pixel_size(view.ActiveViewport)
     previous_mode = view.ActiveViewport.DisplayMode
     large = None
     bitmap = None
     try:
-        set_display_mode(view, "Shaded")
+        if style == "cartoon":
+            mode = ensure_comic_mode()
+            if mode is not None:
+                view.ActiveViewport.DisplayMode = mode
+            scale = COMIC_SUPERSAMPLE
+        else:
+            set_display_mode(view, "Shaded")
+            scale = RENDER_SUPERSAMPLE
         view.Redraw()
         Rhino.RhinoApp.Wait()
         large = capture_view_bitmap(
             view,
-            pixel_width * RENDER_SUPERSAMPLE,
-            pixel_height * RENDER_SUPERSAMPLE,
+            pixel_width * scale,
+            pixel_height * scale,
             0,
         )
         if bitmap_has_content(large):
@@ -727,7 +779,7 @@ def render_snapshot(path):
                 large = None
             bitmap = capture_view_bitmap(view, pixel_width, pixel_height, 0)
         if not bitmap_has_content(bitmap):
-            raise RuntimeError("shaded view came out black")
+            raise RuntimeError("view came out black")
         bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
         bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png)
         return os.path.isfile(path) and os.path.getsize(path) > 1
@@ -781,14 +833,16 @@ def main():
         rs.MessageBox("This file has no snapshots.", 0, "Snapshot 2D Export")
         return
 
-    format_labels = [label for label, _ext in FORMATS]
+    format_labels = [label for label, _ext, _style in FORMATS]
     format_choice = rs.ListBox(format_labels, "Choose the file type", "Snapshot 2D Export")
     if not format_choice:
         return
     extension = None
-    for label, ext in FORMATS:
+    style = "lines"
+    for label, ext, item_style in FORMATS:
         if label == format_choice:
             extension = ext
+            style = item_style
             break
     if not extension:
         return
@@ -802,7 +856,12 @@ def main():
         return
 
     start_folder = rs.DocumentPath() or os.path.expanduser("~")
-    folder_prompt = "Folder for the shaded views" if extension == ".png" else "Folder for the 2D files"
+    if style == "cartoon":
+        folder_prompt = "Folder for the cartoon views"
+    elif style == "shaded":
+        folder_prompt = "Folder for the shaded views"
+    else:
+        folder_prompt = "Folder for the 2D files"
     folder = rs.BrowseForFolder(start_folder, folder_prompt, "Snapshot 2D Export")
     if not folder:
         return
@@ -830,8 +889,8 @@ def main():
             Rhino.RhinoApp.Wait()
             filename = unique_filename(used_names, name, extension)
             path = os.path.join(folder, filename)
-            if extension == ".png":
-                ok = render_snapshot(path)
+            if style in ("shaded", "cartoon"):
+                ok = render_snapshot(path, style)
             else:
                 if select_all_for_make2d() < 1:
                     skipped.append("{} (nothing visible to draw)".format(name))
@@ -868,7 +927,10 @@ def main():
         folder,
         "",
     ]
-    if extension == ".png":
+    if style == "cartoon":
+        lines.append("Each file is a cartoon of that snapshot: flat color and a heavy black outline.")
+        lines.append("The long edge is {} pixels at 300 dpi.".format(RENDER_LONG_EDGE))
+    elif style == "shaded":
         lines.append("Each file is a high-resolution shaded view of that snapshot.")
         lines.append("Flat color, no wood grain, and no cast shadows.")
         lines.append("The long edge is {} pixels at 300 dpi.".format(RENDER_LONG_EDGE))

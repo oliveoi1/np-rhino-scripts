@@ -1,15 +1,16 @@
 """
 Make a 2D drawing of the view stored in each chosen snapshot and export it.
 
-Restores the snapshot, selects the visible model, and runs Make2D on
-that view only. Tangent edges and scene silhouettes are included. Hidden
-lines are not. The Make2D curves are removed from the model after export.
+Restores the snapshot, then either runs Make2D for a line drawing or
+captures a high-resolution render with materials. Make2D includes tangent
+edges and scene silhouettes, and those curves are removed after export.
 """
 
 import os
 
 import Rhino
 import System
+import System.Drawing
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
@@ -18,7 +19,11 @@ FORMATS = [
     ("Adobe Illustrator (.ai)", ".ai"),
     ("EPS (.eps)", ".eps"),
     ("PDF (.pdf)", ".pdf"),
+    ("Render with materials (.png)", ".png"),
 ]
+
+RENDER_LONG_EDGE = 4800
+RENDER_DPI = 300.0
 
 LAYER_NAME = "2d"
 PAGE_WIDTH_IN = 16.0
@@ -620,6 +625,72 @@ def curves_from_objects(obj_ids):
     return items
 
 
+def render_pixel_size(viewport):
+    width = float(viewport.Size.Width)
+    height = float(viewport.Size.Height)
+    if width < 2.0 or height < 2.0:
+        return RENDER_LONG_EDGE, int(RENDER_LONG_EDGE * 0.75)
+    if width >= height:
+        pixel_width = RENDER_LONG_EDGE
+        pixel_height = max(1, int(round(RENDER_LONG_EDGE * height / width)))
+    else:
+        pixel_height = RENDER_LONG_EDGE
+        pixel_width = max(1, int(round(RENDER_LONG_EDGE * width / height)))
+    return pixel_width, pixel_height
+
+
+def use_rendered_display(view):
+    previous = view.ActiveViewport.DisplayMode
+    rendered = Rhino.Display.DisplayModeDescription.FindByName("Rendered")
+    if rendered is not None:
+        view.ActiveViewport.DisplayMode = rendered
+    view.Redraw()
+    Rhino.RhinoApp.Wait()
+    return previous
+
+
+def render_snapshot(path):
+    view = sc.doc.Views.ActiveView
+    if view is None:
+        raise RuntimeError("no active view")
+    previous_mode = None
+    bitmap = None
+    try:
+        previous_mode = use_rendered_display(view)
+        pixel_width, pixel_height = render_pixel_size(view.ActiveViewport)
+        settings = Rhino.Display.ViewCaptureSettings(
+            view,
+            System.Drawing.Size(pixel_width, pixel_height),
+            RENDER_DPI,
+        )
+        for prop, value in (
+            ("DrawGrid", False),
+            ("DrawAxis", False),
+            ("DrawAxes", False),
+            ("DrawWallpaper", True),
+            ("TransparentBackground", False),
+        ):
+            try:
+                setattr(settings, prop, value)
+            except Exception:
+                pass
+        bitmap = Rhino.Display.ViewCapture.CaptureToBitmap(settings)
+        if bitmap is None:
+            return False
+        bitmap.SetResolution(RENDER_DPI, RENDER_DPI)
+        bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png)
+        return os.path.isfile(path) and os.path.getsize(path) > 1
+    finally:
+        if bitmap is not None:
+            bitmap.Dispose()
+        if previous_mode is not None:
+            try:
+                view.ActiveViewport.DisplayMode = previous_mode
+                view.Redraw()
+            except Exception:
+                pass
+
+
 def delete_objects(obj_ids):
     if not obj_ids:
         return
@@ -660,7 +731,8 @@ def main():
         return
 
     start_folder = rs.DocumentPath() or os.path.expanduser("~")
-    folder = rs.BrowseForFolder(start_folder, "Folder for the 2D files", "Snapshot 2D Export")
+    folder_prompt = "Folder for the render files" if extension == ".png" else "Folder for the 2D files"
+    folder = rs.BrowseForFolder(start_folder, folder_prompt, "Snapshot 2D Export")
     if not folder:
         return
     if not os.path.isdir(folder):
@@ -685,22 +757,24 @@ def main():
                 continue
             sc.doc.Views.Redraw()
             Rhino.RhinoApp.Wait()
-            if select_all_for_make2d() < 1:
-                skipped.append("{} (nothing visible to draw)".format(name))
-                continue
-            before = set(object_ids())
-            if not run_make2d():
-                skipped.append("{} (Make2D did not finish)".format(name))
-                continue
-            new_ids = [obj_id for obj_id in object_ids() if obj_id not in before]
-            items = curves_from_objects(new_ids)
-            if not items:
-                skipped.append("{} (no 2D curves)".format(name))
-                continue
-
             filename = unique_filename(used_names, name, extension)
             path = os.path.join(folder, filename)
-            ok = write_snapshot_file(items, path, extension)
+            if extension == ".png":
+                ok = render_snapshot(path)
+            else:
+                if select_all_for_make2d() < 1:
+                    skipped.append("{} (nothing visible to draw)".format(name))
+                    continue
+                before = set(object_ids())
+                if not run_make2d():
+                    skipped.append("{} (Make2D did not finish)".format(name))
+                    continue
+                new_ids = [obj_id for obj_id in object_ids() if obj_id not in before]
+                items = curves_from_objects(new_ids)
+                if not items:
+                    skipped.append("{} (no 2D curves)".format(name))
+                    continue
+                ok = write_snapshot_file(items, path, extension)
             if not ok or not os.path.isfile(path) or os.path.getsize(path) < 1:
                 skipped.append("{} (export failed)".format(name))
                 continue
@@ -722,10 +796,14 @@ def main():
         "Folder:",
         folder,
         "",
-        "Each file is the Make2D of the view stored in that snapshot.",
-        "PDF lines are vectors, so they stay sharp in InDesign.",
-        "The model is left on the last snapshot that was restored.",
     ]
+    if extension == ".png":
+        lines.append("Each file is a 300 dpi render of that snapshot, with materials.")
+        lines.append("The long edge is {} pixels.".format(RENDER_LONG_EDGE))
+    else:
+        lines.append("Each file is the Make2D of the view stored in that snapshot.")
+        lines.append("PDF lines are vectors, so they stay sharp in InDesign.")
+    lines.append("The model is left on the last snapshot that was restored.")
     if skipped:
         lines.append("")
         lines.append("Skipped:")

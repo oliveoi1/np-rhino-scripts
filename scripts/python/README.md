@@ -28,6 +28,7 @@ Current scripts in this folder:
 - `10 logo_cut.py`
 - `12 zero_sku_insertion_z.py`
 - `16 snapshot_2d_export.py`
+- `17 explode_fittings.py`
 
 ## Notes
 

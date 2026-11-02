@@ -22,6 +22,10 @@ CATALOG = [
     ("Logo insert", "logo_insert", "NP-Construction - Setout"),
     ("Pilot hole", "Pilot Hole", "NP-Construction - Setout"),
     ("Grub screw", "grub_screw", "NP-Fittings"),
+    ("Screw 1-1/4in pan head (two flat plies)", "screw_1-1-4in_pan", "NP-Fittings"),
+    ("Screw 1-1/4in countersunk (two flat plies)", "screw_1-1-4in_csk", "NP-Fittings"),
+    ("Screw 1-1/2in pan head (into an edge)", "screw_1-1-2in_pan", "NP-Fittings"),
+    ("Screw 1-1/2in countersunk (into an edge)", "screw_1-1-2in_csk", "NP-Fittings"),
     ("Cam", "cam", "NP-Fittings"),
     ("Glide", "glide", "NP-Fittings"),
     ("Flipper pin", "flipper_pin", "NP-Fittings"),
@@ -31,6 +35,18 @@ CATALOG = [
     ("Logo", "Logo", "NP-Panel-Logo"),
     ("Logo outline", "Logo_outline", "NP-Panel-Logo"),
 ]
+
+
+# Blocks inserted perpendicular to the face under the picked point. Their
+# insertion point sits on the face and the shank runs down local -Z, so local
+# +Z is aligned with the outward face normal. Other blocks stay world-aligned.
+ORIENT_TO_FACE = {
+    "screw_1-1-4in_pan",
+    "screw_1-1-4in_csk",
+    "screw_1-1-2in_pan",
+    "screw_1-1-2in_csk",
+}
+FACE_SEARCH_RADIUS = 0.5  # model units: how far from the pick to look for a face or hole wall
 
 
 def library_path():
@@ -101,7 +117,9 @@ def import_definition(model, name, imported):
     index = sc.doc.InstanceDefinitions.Add(
         source.Name,
         source.Description or "",
-        source.BasePoint,
+        # File3dm definitions do not expose a base point; library blocks are
+        # authored with their insertion point at the origin.
+        Rhino.Geometry.Point3d.Origin,
         geometry,
         attributes,
     )
@@ -131,6 +149,156 @@ def ensure_definition(name):
     return True
 
 
+def _hit_candidates(geometry, point, xform, max_dist, found):
+    """Collect (distance, brep, component, local_point, xform) for faces near point."""
+    if isinstance(geometry, Rhino.Geometry.InstanceReferenceGeometry):
+        idef = sc.doc.InstanceDefinitions.FindId(geometry.ParentIdefId)
+        if idef is None:
+            return
+        child_xform = xform * geometry.Xform
+        for child in idef.GetObjects():
+            _hit_candidates(child.Geometry, point, child_xform, max_dist, found)
+        return
+
+    brep = None
+    if isinstance(geometry, Rhino.Geometry.Brep):
+        brep = geometry
+    elif isinstance(geometry, Rhino.Geometry.Extrusion):
+        brep = geometry.ToBrep()
+    if brep is None:
+        return
+
+    inverse = Rhino.Geometry.Transform.Identity
+    if not xform.IsIdentity:
+        ok, inverse = xform.TryGetInverse()
+        if not ok:
+            return
+    local_point = Rhino.Geometry.Point3d(point)
+    local_point.Transform(inverse)
+    box = brep.GetBoundingBox(False)
+    box.Inflate(max_dist)
+    if not box.Contains(local_point):
+        return
+    result = brep.ClosestPoint(local_point, max_dist)
+    if not result or not result[0]:
+        return
+    closest, component = result[1], result[2]
+    found.append((closest.DistanceTo(local_point), brep, component, local_point, xform))
+
+
+def _hole_axis_outward(face, local_point, tol):
+    """If face is the wall of a hole around local_point, return the unit axis pointing out of the hole."""
+    ok, cylinder = face.TryGetCylinder(tol)
+    if not ok:
+        return None
+    axis = cylinder.Axis
+    axis.Unitize()
+    centre = cylinder.Center
+    offset = local_point - centre
+    along = offset * axis
+    radial = (offset - axis * along).Length
+    if radial > cylinder.Radius * 0.9:
+        return None  # pick is on the cylinder surface, not over its mouth
+    curve = face.OuterLoop.To3dCurve()
+    params = curve.DivideByCount(48, True)
+    if not params:
+        return None
+    ts = [(curve.PointAt(t) - centre) * axis for t in params]
+    mid = (min(ts) + max(ts)) / 2.0
+    return axis if along >= mid else -axis
+
+
+def _normal_from_hit(hit, world_point, tol):
+    """Outward unit normal (world) for a hit, or None."""
+    distance, brep, component, local_point, xform = hit
+    ctype = component.ComponentIndexType
+    faces = []
+    if ctype == Rhino.Geometry.ComponentIndexType.BrepFace:
+        faces = [brep.Faces[component.Index]]
+    elif ctype == Rhino.Geometry.ComponentIndexType.BrepEdge:
+        faces = [brep.Faces[i] for i in brep.Edges[component.Index].AdjacentFaces()]
+    elif ctype == Rhino.Geometry.ComponentIndexType.BrepVertex:
+        edges = brep.Vertices[component.Index].EdgeIndices()
+        seen = set()
+        for edge_index in edges:
+            for face_index in brep.Edges[edge_index].AdjacentFaces():
+                if face_index not in seen:
+                    seen.add(face_index)
+                    faces.append(brep.Faces[face_index])
+    if not faces:
+        return None
+
+    normal = None
+    # a direct hit on a flat face wins; an edge or vertex snap on a hole rim
+    # also has a flat face adjacent to it
+    for face in faces:
+        if face.IsPlanar(tol):
+            ok, u, v = face.ClosestPoint(local_point)
+            if ok:
+                normal = face.NormalAt(u, v)  # already adjusted for face orientation
+                break
+    if normal is None:
+        # over a hole: use the hole axis, pointing out of the material
+        for face in faces:
+            normal = _hole_axis_outward(face, local_point, tol)
+            if normal is not None:
+                break
+    if normal is None:
+        face = faces[0]
+        ok, u, v = face.ClosestPoint(local_point)
+        if not ok:
+            return None
+        normal = face.NormalAt(u, v)
+
+    normal = Rhino.Geometry.Vector3d(normal)
+    normal.Transform(xform)
+    normal.Unitize()
+    if not brep.IsSolid:
+        # an open surface has no inside: face the normal toward the viewer
+        camera = sc.doc.Views.ActiveView.ActiveViewport.CameraLocation
+        if (camera - world_point) * normal < 0:
+            normal = -normal
+    return normal
+
+
+def face_normal_at_point(point, max_dist=FACE_SEARCH_RADIUS):
+    """Outward unit normal of the face under a picked point, or None.
+
+    Handles a pick on a flat face, on the rim of a hole, or at the centre of a
+    hole (where the nearest geometry is the hole wall, whose axis is used)."""
+    point = Rhino.Geometry.Point3d(point[0], point[1], point[2])
+    tol = sc.doc.ModelAbsoluteTolerance
+    found = []
+    for obj in sc.doc.Objects:
+        if not obj.Visible:
+            continue
+        box = obj.Geometry.GetBoundingBox(True)
+        box.Inflate(max_dist)
+        if not box.Contains(point):
+            continue
+        _hit_candidates(obj.Geometry, point, Rhino.Geometry.Transform.Identity, max_dist, found)
+    found.sort(key=lambda item: item[0])
+    for hit in found:
+        normal = _normal_from_hit(hit, point, tol)
+        if normal is not None:
+            return normal
+    return None
+
+
+def insert_transform(point, normal):
+    plane = Rhino.Geometry.Plane(Rhino.Geometry.Point3d(point[0], point[1], point[2]), normal)
+    return Rhino.Geometry.Transform.PlaneToPlane(Rhino.Geometry.Plane.WorldXY, plane)
+
+
+def insert_block_at(block_name, point):
+    """Insert the block at point; oriented to the face under it when the block asks for that."""
+    if block_name in ORIENT_TO_FACE:
+        normal = face_normal_at_point(point)
+        if normal is not None:
+            return rs.InsertBlock2(block_name, insert_transform(point, normal))
+    return rs.InsertBlock(block_name, point)
+
+
 def main():
     labels = [row[0] for row in CATALOG]
     choice = rs.ListBox(labels, "Choose what to insert", "Insert Block")
@@ -156,7 +324,7 @@ def main():
         point = rs.GetPoint("Pick insertion point for {}. Enter when done.".format(choice))
         if not point:
             break
-        instance_id = rs.InsertBlock(block_name, point)
+        instance_id = insert_block_at(block_name, point)
         if not instance_id:
             rs.MessageBox("Could not insert '{}'.".format(block_name), 0, "Insert Block")
             break

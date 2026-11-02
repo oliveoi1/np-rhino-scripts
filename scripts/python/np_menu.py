@@ -13,7 +13,9 @@ update check as NP when it is opened.
 
 import json
 import os
+import re
 import sys
+import time
 import traceback
 
 import Rhino
@@ -31,6 +33,7 @@ for _path in (THIS_DIR, SHARED_DIR, INSTALL_ROOT):
         sys.path.insert(0, _path)
 
 import importlib
+import importlib.util
 
 import np_launcher
 
@@ -51,57 +54,69 @@ MENU_FILENAME = "np_menu.py"
 MENU_ALIAS = "NPM"
 MAX_RECENT = 6
 OTHER_TITLE = "Other"
+CHOICE_FILENAME = "np_menu_choice.json"
 
-# Category -> script filenames (labels come from np_launcher.SCRIPT_CHOICES).
-# A script missing from this table still appears, under "Other".
+# Tools whose first step is a list: the window shows that list as a drawer under
+# the tool. Each script exposes menu_items() and reads the chosen entry from
+# _user_data/np_menu_choice.json, skipping its own list dialog.
+SUBMENU_TOOLS = [
+    "15 insert_block.py",
+    "19 display_modes.py",
+    "18 annotation_styles.py",
+]
+
+# Category -> (menu label, script filename), in display order. The window uses
+# these labels; the classic NP list keeps the labels in np_launcher.SCRIPT_CHOICES.
+# A script in SCRIPT_CHOICES that is missing here still appears, under "Other".
+# Order and names come from the "NP Rhino Tools - Menu Order" sheet.
 CATEGORIES = [
     ("Joinery", [
-        "01 extrude_curves.py",
-        "01a_extrude_ply_bands.py",
-        "02 dado_recess.py",
-        "02 dado_tongue.py",
-        "02b Surface recess.py",
-        "02c engrave.py",
+        ("Extrude Curves", "01 extrude_curves.py"),
+        ("Extrude Ply Bands", "01a_extrude_ply_bands.py"),
+        ("Dado Recess", "02 dado_recess.py"),
+        ("Dado Tongue", "02 dado_tongue.py"),
+        ("Surface Recess", "02b Surface recess.py"),
+        ("Engrave", "02c engrave.py"),
     ]),
-    ("Holes & Inserts", [
-        "03a hole_insertpoints_auto.py",
-        "03b grub_screws_and_holes.py",
-        "03c dimple_hole.py",
-        "03d custom_holes.py",
-        "04a cam_inserts.py",
-        "04b cam_holes_+_cams.py",
-        "05a flipper_insert_auto.py",
-        "05b flipper_holes_+flippers.py",
-        "05c shelf_holes.py",
+    ("Auto Inserts", [
+        ("Hole Insert Points Auto", "03a hole_insertpoints_auto.py"),
+        ("Grub Screws + Holes", "03b grub_screws_and_holes.py"),
+        ("Dimple Hole", "03c dimple_hole.py"),
+        ("Custom Holes", "03d custom_holes.py"),
+        ("Cam Inserts", "04a cam_inserts.py"),
+        ("Cam Holes + Cams", "04b cam_holes_+_cams.py"),
+        ("Flipper Insert Auto", "05a flipper_insert_auto.py"),
+        ("Flipper Holes + Flippers", "05b flipper_holes_+flippers.py"),
+        ("Shelf Holes", "05c shelf_holes.py"),
+        ("Logo Cut", "10 logo_cut.py"),
     ]),
     ("Hardware", [
-        "06a castor_insert.py",
-        "06b castor_(SM)_insert_+_holes.py",
-        "06b castor_(LG)_insert_+_holes.py",
-        "07 Glides.py",
-        "15 insert_block.py",
-        "17 explode_fittings.py",
+        ("Insert Block", "15 insert_block.py"),
+        ("Castor Insert", "06a castor_insert.py"),
+        ("Castor Small Insert + Holes", "06b castor_(SM)_insert_+_holes.py"),
+        ("Castor Large Insert + Holes", "06b castor_(LG)_insert_+_holes.py"),
+        ("Glides", "07 Glides.py"),
+        ("Explode Fittings", "17 explode_fittings.py"),
     ]),
     ("Blocks", [
-        "create_or_redefine_block.py",
-        "create_or_redefine_block_and_insert_copy.py",
-        "create_or_redefine_block_from_sku_insert_point.py",
-        "12 zero_sku_insertion_z.py",
+        ("Create / Redefine Block", "create_or_redefine_block.py"),
+        ("Create / Redefine Block + Add Instance", "create_or_redefine_block_and_insert_copy.py"),
+        ("Create / Redefine Block Using SKU Insertion Point", "create_or_redefine_block_from_sku_insert_point.py"),
+        ("Zero SKU Insertion Z", "12 zero_sku_insertion_z.py"),
     ]),
-    ("Annotation", [
-        "13 bounding_dimensions.py",
-        "14 numbered_dots.py",
-        "18 annotation_styles.py",
+    ("Drawings + Annotation", [
+        ("Bounding Dimensions", "13 bounding_dimensions.py"),
+        ("Numbered Dots", "14 numbered_dots.py"),
+        ("Plan View with Block names", "09 plan view.py"),
     ]),
-    ("Drawings & Export", [
-        "09 plan view.py",
-        "10 logo_cut.py",
-        "16 snapshot_2d_export.py",
-        "11 export_blocks_to_skp.py",
-        "11a export_blocks_to_3dm.py",
+    ("Export", [
+        ("Snapshot 2D Export", "16 snapshot_2d_export.py"),
+        ("Export Blocks to SketchUp", "11 export_blocks_to_skp.py"),
+        ("Export Blocks to Rhino", "11a export_blocks_to_3dm.py"),
     ]),
     ("Templates", [
-        "19 display_modes.py",
+        ("Annotation Styles", "18 annotation_styles.py"),
+        ("Display Modes", "19 display_modes.py"),
     ]),
 ]
 
@@ -113,7 +128,7 @@ def state_path():
 
 
 def load_state():
-    state = {"favourites": [], "recent": [], "window": None}
+    state = {"favourites": [], "recent": [], "expanded": [], "window": None}
     path = state_path()
     if os.path.isfile(path):
         try:
@@ -122,6 +137,7 @@ def load_state():
             if isinstance(saved, dict):
                 state["favourites"] = [f for f in saved.get("favourites", []) if isinstance(f, str)]
                 state["recent"] = [f for f in saved.get("recent", []) if isinstance(f, str)]
+                state["expanded"] = [f for f in saved.get("expanded", []) if isinstance(f, str)]
                 window = saved.get("window")
                 if isinstance(window, dict):
                     state["window"] = window
@@ -150,12 +166,13 @@ def tool_table():
 
 
 def build_groups():
+    """[(category, [(menu label, filename), ...]), ...] for scripts the launcher knows."""
     rows = tool_table()
-    by_file = dict((filename, label) for label, filename in rows)
+    known = set(filename for _, filename in rows)
     groups = []
     used = set()
-    for title, files in CATEGORIES:
-        members = [(by_file[f], f) for f in files if f in by_file]
+    for title, entries in CATEGORIES:
+        members = [(label, f) for label, f in entries if f in known and f not in used]
         used.update(f for _, f in members)
         if members:
             groups.append((title, members))
@@ -163,6 +180,44 @@ def build_groups():
     if rest:
         groups.append((OTHER_TITLE, rest))
     return groups
+
+
+def labels_by_file(groups):
+    out = {}
+    for _, members in groups:
+        for label, filename in members:
+            out[filename] = label
+    return out
+
+
+def load_tool_module(filename):
+    """Import a tool script by path without running it (its main() is guarded)."""
+    path = os.path.join(THIS_DIR, filename)
+    name = "np_tool_" + re.sub(r"\W+", "_", filename)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def submenu_entries(filename):
+    """The choices the tool's list dialog would offer, or [] if it has none."""
+    if filename not in SUBMENU_TOOLS:
+        return []
+    try:
+        return [str(item) for item in load_tool_module(filename).menu_items()]
+    except Exception:
+        log(traceback.format_exc(), "ERROR")
+        return []
+
+
+def write_menu_choice(filename, choice):
+    """Hand a drawer choice to the script about to run."""
+    folder = os.path.join(INSTALL_ROOT, "_user_data")
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    with open(os.path.join(folder, CHOICE_FILENAME), "w") as handle:
+        json.dump({"script": filename, "choice": choice, "time": time.time()}, handle)
 
 
 def version_text():
@@ -186,6 +241,23 @@ def log(message, level="INFO"):
     Rhino.RhinoApp.WriteLine("NP Menu: " + message)
 
 
+def left_align(button):
+    """Eto has no text alignment on Button; set it on the native control."""
+    native = button.ControlObject
+    try:  # macOS (AppKit NSButton)
+        import AppKit
+        native.Alignment = AppKit.NSTextAlignment.Left
+        return
+    except Exception:
+        pass
+    try:  # Windows (WPF Button)
+        import System.Windows
+        native.HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left
+        native.Padding = System.Windows.Thickness(8, 1, 4, 1)
+    except Exception:
+        pass
+
+
 # ----------------------------------------------------------------- form ---
 
 class NPMenuForm(forms.Form):
@@ -194,7 +266,7 @@ class NPMenuForm(forms.Form):
         super().__init__()
         self.state = load_state()
         self.groups = build_groups()
-        self.by_file = dict((f, label) for label, f in tool_table())
+        self.by_file = labels_by_file(self.groups)
 
         self.Title = "NP Rhino Tools"
         self.Padding = drawing.Padding(10)
@@ -251,6 +323,7 @@ class NPMenuForm(forms.Form):
         layout.AddRow(footer)
         self.Content = layout
 
+        self._entries = {}
         self.Closed += self.on_closed
         self.rebuild()
 
@@ -289,8 +362,18 @@ class NPMenuForm(forms.Form):
         out.extend(self.groups)
         return out
 
+    def entries_for(self, filename):
+        if filename not in self._entries:
+            self._entries[filename] = submenu_entries(filename)
+        return self._entries[filename]
+
+    def entry_matches(self, entry):
+        words = self.query_words()
+        return bool(words) and all(w in entry.lower() for w in words)
+
     def rebuild(self):
         try:
+            self._entries = {}
             column = forms.StackLayout()
             column.Orientation = forms.Orientation.Vertical
             column.HorizontalContentAlignment = forms.HorizontalAlignment.Stretch
@@ -298,18 +381,28 @@ class NPMenuForm(forms.Form):
             column.Padding = drawing.Padding(0, 0, 8, 0)
             shown = 0
             for title, rows in self.sections():
-                rows = [(label, f) for label, f in rows if self.matches(label, f)]
-                if not rows:
+                block = []
+                for label, filename in rows:
+                    has_drawer = filename in SUBMENU_TOOLS
+                    entries = self.entries_for(filename) if has_drawer else []
+                    hits = [e for e in entries if self.entry_matches(e)]
+                    tool_hit = self.matches(label, filename)
+                    if not tool_hit and not hits:
+                        continue
+                    if hits and not tool_hit:
+                        shown_entries, expanded = hits, True
+                    else:
+                        expanded = filename in self.state["expanded"]
+                        shown_entries = entries if expanded else []
+                    block.append((label, filename, has_drawer, expanded, shown_entries))
+                if not block:
                     continue
                 column.Items.Add(forms.StackLayoutItem(self.heading(title), False))
-                for label, filename in rows:
-                    row = forms.StackLayout()
-                    row.Orientation = forms.Orientation.Horizontal
-                    row.VerticalContentAlignment = forms.VerticalAlignment.Center
-                    row.Spacing = 4
-                    row.Items.Add(forms.StackLayoutItem(self.star_button(filename), False))
-                    row.Items.Add(forms.StackLayoutItem(self.tool_button(label, filename), True))
-                    column.Items.Add(forms.StackLayoutItem(row, False))
+                for label, filename, has_drawer, expanded, shown_entries in block:
+                    column.Items.Add(forms.StackLayoutItem(
+                        self.tool_row(label, filename, has_drawer, expanded), False))
+                    for entry in shown_entries:
+                        column.Items.Add(forms.StackLayoutItem(self.entry_row(filename, entry), False))
                     shown += 1
                 gap = forms.Panel()
                 gap.Size = drawing.Size(-1, 8)
@@ -322,6 +415,55 @@ class NPMenuForm(forms.Form):
             self.scroll.Content = column
         except Exception:
             log(traceback.format_exc(), "ERROR")
+
+    def tool_row(self, label, filename, has_drawer, expanded):
+        row = forms.StackLayout()
+        row.Orientation = forms.Orientation.Horizontal
+        row.VerticalContentAlignment = forms.VerticalAlignment.Center
+        row.Spacing = 4
+        row.Items.Add(forms.StackLayoutItem(self.star_button(filename), False))
+        if has_drawer:
+            button = forms.Button()
+            button.Text = ("\u25be  " if expanded else "\u25b8  ") + label
+            button.ToolTip = "Hide the choices" if expanded else "Show the choices for " + label
+            button.Click += lambda sender, e, f=filename: self.toggle_expanded(f)
+            left_align(button)
+            row.Items.Add(forms.StackLayoutItem(button, True))
+        else:
+            row.Items.Add(forms.StackLayoutItem(self.tool_button(label, filename), True))
+        return row
+
+    def entry_row(self, filename, entry):
+        row = forms.StackLayout()
+        row.Orientation = forms.Orientation.Horizontal
+        row.VerticalContentAlignment = forms.VerticalAlignment.Center
+        row.Spacing = 4
+        indent = forms.Panel()
+        indent.Size = drawing.Size(32 + 4 + 16, -1)
+        row.Items.Add(forms.StackLayoutItem(indent, False))
+        button = forms.Button()
+        button.Text = entry
+        button.ToolTip = filename
+        button.Click += lambda sender, e, f=filename, c=entry: self.run_entry(f, c)
+        left_align(button)
+        row.Items.Add(forms.StackLayoutItem(button, True))
+        return row
+
+    def toggle_expanded(self, filename):
+        expanded = self.state["expanded"]
+        if filename in expanded:
+            expanded.remove(filename)
+        else:
+            expanded.append(filename)
+        save_state(self.state)
+        self.refresh_later()
+
+    def run_entry(self, filename, choice):
+        try:
+            write_menu_choice(filename, choice)
+        except Exception:
+            log(traceback.format_exc(), "ERROR")
+        self.run_tool(filename)
 
     @staticmethod
     def heading(text):
@@ -336,6 +478,7 @@ class NPMenuForm(forms.Form):
         button.Text = label
         button.ToolTip = filename
         button.Click += lambda sender, e, f=filename: self.run_tool(f)
+        left_align(button)
         return button
 
     def star_button(self, filename):
@@ -369,16 +512,48 @@ class NPMenuForm(forms.Form):
         save_state(self.state)
 
     def run_tool(self, filename):
+        """Start a tool. If another tool is waiting for input, cancel it first
+        (the "!" keystroke is Rhino's cancel) and launch once Rhino is idle;
+        a script started straight away would only nest inside the old one."""
         self.remember_recent(filename)
+        script_path = os.path.join(os.path.dirname(os.path.abspath(np_launcher.__file__)), filename)
+        if not os.path.isfile(script_path):
+            Rhino.UI.Dialogs.ShowMessage("Script file not found:\n{}".format(script_path), "NP Menu")
+            return
+        macro = '! _-RunPythonScript "{}"'.format(script_path)
         try:
-            ok = np_launcher.run_script_file(filename)
-            if not ok:
-                Rhino.RhinoApp.WriteLine("NP Menu: could not run {}".format(filename))
+            if Rhino.Commands.Command.InCommand():
+                Rhino.RhinoApp.SendKeystrokes("!", True)
+                self.launch_when_idle(macro, filename)
+            else:
+                self.launch(macro, filename)
         except Exception:
             log(traceback.format_exc(), "ERROR")
-            Rhino.UI.Dialogs.ShowMessage(
-                "Failed to run {}.\nSee _logs/np_deploy.log".format(filename), "NP Menu")
         self.refresh_later()
+
+    def launch(self, macro, filename):
+        if not Rhino.RhinoApp.RunScript(macro, False):
+            Rhino.RhinoApp.WriteLine("NP Menu: could not run {}".format(filename))
+
+    def launch_when_idle(self, macro, filename, timeout=3.0):
+        """Poll until the cancelled command has exited, then launch."""
+        timer = forms.UITimer()
+        timer.Interval = 0.1
+        state = {"waited": 0.0}
+
+        def tick(sender, e):
+            state["waited"] += timer.Interval
+            if not Rhino.Commands.Command.InCommand():
+                timer.Stop()
+                self.launch(macro, filename)
+            elif state["waited"] >= timeout:
+                timer.Stop()
+                Rhino.RhinoApp.WriteLine(
+                    "NP Menu: the running tool did not cancel; press Esc and try again.")
+
+        timer.Elapsed += tick
+        self._timer = timer
+        timer.Start()
 
     def on_search_changed(self, sender, e):
         self.rebuild()
@@ -417,7 +592,7 @@ class NPMenuForm(forms.Form):
         except Exception:
             log(traceback.format_exc(), "ERROR")
         self.groups = build_groups()
-        self.by_file = dict((f, label) for label, f in tool_table())
+        self.by_file = labels_by_file(self.groups)
         self.version_label.Text = version_text()
         self.refresh_later()
 

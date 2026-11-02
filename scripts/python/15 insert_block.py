@@ -4,6 +4,9 @@ import Rhino
 import rhinoscriptsyntax as rs
 import scriptcontext as sc
 
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else ""
+_INSTALL_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
+
 LIBRARY_FILENAME = "NP_Rhino_Hardware.3dm"
 
 # Menu label, block definition name, layer for the inserted instance.
@@ -35,6 +38,36 @@ CATALOG = [
     ("Logo", "Logo", "NP-Panel-Logo"),
     ("Logo outline", "Logo_outline", "NP-Panel-Logo"),
 ]
+
+
+# --- choice handed over by the NP Menu window --------------------------------
+# The window writes _user_data/np_menu_choice.json just before launching this
+# script; when the entry is recent and meant for this script, its list dialog
+# is skipped. A file is used (not sc.sticky) so it works across interpreters.
+
+def take_menu_choice(valid_choices):
+    import json
+    import time
+    path = os.path.join(_INSTALL_ROOT, "_user_data", "np_menu_choice.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as handle:
+            data = json.load(handle)
+    except Exception:
+        data = None
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+    if not isinstance(data, dict):
+        return None
+    if data.get("script") != os.path.basename(__file__):
+        return None
+    if time.time() - float(data.get("time", 0)) > 120:
+        return None
+    choice = data.get("choice")
+    return choice if choice in valid_choices else None
 
 
 # Blocks inserted perpendicular to the face under the picked point. Their
@@ -299,9 +332,16 @@ def insert_block_at(block_name, point):
     return rs.InsertBlock(block_name, point)
 
 
+def menu_items():
+    """Labels offered by the list dialog and by the NP Menu drawer."""
+    return [row[0] for row in CATALOG]
+
+
 def main():
-    labels = [row[0] for row in CATALOG]
-    choice = rs.ListBox(labels, "Choose what to insert", "Insert Block")
+    labels = menu_items()
+    choice = take_menu_choice(labels)
+    if not choice:
+        choice = rs.ListBox(labels, "Choose what to insert", "Insert Block")
     if not choice:
         return
 
@@ -340,4 +380,5 @@ def main():
         )
 
 
-main()
+if __name__ == "__main__":
+    main()

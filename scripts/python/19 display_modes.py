@@ -28,6 +28,36 @@ SAVE_LABEL = "Save one of my display modes to the team folder..."
 IMPORT_PREFIX = "Import: "
 
 
+# --- choice handed over by the NP Menu window --------------------------------
+# The window writes _user_data/np_menu_choice.json just before launching this
+# script; when the entry is recent and meant for this script, its list dialog
+# is skipped. A file is used (not sc.sticky) so it works across interpreters.
+
+def take_menu_choice(valid_choices):
+    import json
+    import time
+    path = os.path.join(_INSTALL_ROOT, "_user_data", "np_menu_choice.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as handle:
+            data = json.load(handle)
+    except Exception:
+        data = None
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+    if not isinstance(data, dict):
+        return None
+    if data.get("script") != os.path.basename(__file__):
+        return None
+    if time.time() - float(data.get("time", 0)) > 120:
+        return None
+    choice = data.get("choice")
+    return choice if choice in valid_choices else None
+
+
 def mode_files():
     if not os.path.isdir(MODES_FOLDER):
         return []
@@ -101,15 +131,24 @@ def save_mode():
         rs.MessageBox("Could not export '{}'.".format(choice), 0, TITLE)
 
 
-def main():
+def menu_items():
+    """Choices offered by the list dialog and by the NP Menu drawer."""
     files = mode_files()
     items = [IMPORT_PREFIX + mode_name_from_file(p) for p in files]
     if len(files) > 1:
         items.append(IMPORT_ALL_LABEL)
     items.append(SAVE_LABEL)
-    message = ("Team display modes" if files
-               else "No team display modes yet. Save one of yours to start the set.")
-    choice = rs.ListBox(items, message, TITLE, items[0])
+    return items
+
+
+def main():
+    files = mode_files()
+    items = menu_items()
+    choice = take_menu_choice(items)
+    if not choice:
+        message = ("Team display modes" if files
+                   else "No team display modes yet. Save one of yours to start the set.")
+        choice = rs.ListBox(items, message, TITLE, items[0])
     if not choice:
         return
 

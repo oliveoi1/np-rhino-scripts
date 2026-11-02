@@ -143,6 +143,15 @@ def delete_block_definition(block_name):
     except:
         return False
 
+def place_furniture_instance(block_name, insert_pt):
+    instance_id = rs.InsertBlock(block_name, insert_pt)
+    if not instance_id:
+        return None
+    ensure_layer(FURNITURE_LAYER)
+    rs.ObjectLayer(instance_id, FURNITURE_LAYER)
+    rs.SelectObject(instance_id)
+    return instance_id
+
 def is_valid_source_object(obj_id, text_obj, target_block_name):
     if not obj_id:
         return False, "invalid"
@@ -228,15 +237,21 @@ def main():
 
     saved_instances = []
     restored_count = 0
+    block_already_exists = rs.IsBlock(block_name)
 
-    if rs.IsBlock(block_name):
+    if block_already_exists:
         saved_instances = collect_existing_instances(block_name)
         delete_saved_instances(saved_instances)
 
         if rs.IsBlock(block_name):
             ok = delete_block_definition(block_name)
             if not ok and rs.IsBlock(block_name):
-                rs.MessageBox("Could not delete existing block definition.")
+                restore_saved_instances(block_name, saved_instances)
+                rs.MessageBox(
+                    "Could not replace block '{}'. Existing instances were put back.".format(
+                        block_name
+                    )
+                )
                 return
 
     result = rs.AddBlock(objs, insert_pt, block_name, delete_input=True)
@@ -244,24 +259,20 @@ def main():
         rs.MessageBox("Block creation failed.")
         return
 
-    if saved_instances:
+    if block_already_exists:
         restored_count = restore_saved_instances(block_name, saved_instances)
-
-    instance_id = rs.InsertBlock(block_name, insert_pt)
-
-    if instance_id:
-        ensure_layer(FURNITURE_LAYER)
-        rs.ObjectLayer(instance_id, FURNITURE_LAYER)
-        rs.SelectObject(instance_id)
-
-    if saved_instances:
+        # AddBlock consumes the selected objects. Put one block back at the
+        # insertion point so that geometry stays where it was modeled, and
+        # the saved instances are the replaced copies.
+        place_furniture_instance(block_name, insert_pt)
         rs.MessageBox(
-            "Block '{}' updated.\nRestored instances: {}\nNew instance inserted.".format(
+            "Block '{}' updated.\nReplaced instances: {}\nSelected geometry is now a block at the insertion point.".format(
                 block_name,
                 restored_count
             )
         )
     else:
+        place_furniture_instance(block_name, insert_pt)
         rs.MessageBox("Block '{}' created and inserted.".format(block_name))
 
 main()

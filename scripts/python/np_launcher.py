@@ -28,14 +28,17 @@ except ImportError:
 
 
 SCRIPT_CHOICES = [
+    ("NP Menu (window)", "np_menu.py"),
     ("01 - Extrude Curves", "01 extrude_curves.py"),
     ("01a - Extrude Ply Bands", "01a_extrude_ply_bands.py"),
     ("02 - Dado Recess", "02 dado_recess.py"),
     ("02 - Dado Tongue", "02 dado_tongue.py"),
     ("02b - Surface Recess", "02b Surface recess.py"),
+    ("02c - Engrave", "02c engrave.py"),
     ("03a - Hole Insert Points Auto", "03a hole_insertpoints_auto.py"),
     ("03b - Grub Screws + Holes", "03b grub_screws_and_holes.py"),
     ("03c - Dimple Hole", "03c dimple_hole.py"),
+    ("03d - Custom Holes", "03d custom_holes.py"),
     ("04a - Cam Inserts", "04a cam_inserts.py"),
     ("04b - Cam Holes + Cams", "04b cam_holes_+_cams.py"),
     ("05a - Flipper Insert Auto", "05a flipper_insert_auto.py"),
@@ -46,17 +49,26 @@ SCRIPT_CHOICES = [
     ("06b - Castor Large Insert + Holes", "06b castor_(LG)_insert_+_holes.py"),
     ("07 - Glides", "07 Glides.py"),
     ("Insert Block", "15 insert_block.py"),
-    ("08a - Create Block 1st", "08a create_block 1st.py"),
-    ("08a - Create Block 1st Copy", "08a create_block 1st copy.py"),
-    ("08b - Create Block", "08b create_block.py"),
+    ("Create / Redefine Block", "create_or_redefine_block.py"),
+    ("Create / Redefine Block + Add Instance", "create_or_redefine_block_and_insert_copy.py"),
+    ("Create / Redefine Block Using SKU Insertion Point", "create_or_redefine_block_from_sku_insert_point.py"),
     ("09 - Plan View", "09 plan view.py"),
     ("10 - Logo Cut", "10 logo_cut.py"),
     ("11 - Export Blocks to SketchUp", "11 export_blocks_to_skp.py"),
+    ("11a - Export Blocks to Rhino", "11a export_blocks_to_3dm.py"),
     ("12 - Zero SKU Insertion Z", "12 zero_sku_insertion_z.py"),
+    ("13 - Bounding Dimensions", "13 bounding_dimensions.py"),
+    ("14 - Numbered Dots", "14 numbered_dots.py"),
     ("16 - Snapshot 2D Export", "16 snapshot_2d_export.py"),
     ("17 - Explode Fittings", "17 explode_fittings.py"),
+    ("18 - Annotation Styles", "18 annotation_styles.py"),
+    ("19 - Display Modes", "19 display_modes.py"),
 ]
 
+GUIDE_LABEL = "Guide & Instructions"
+GUIDE_URL = (
+    "https://docs.google.com/document/d/1-wMRbW0fdt7HhVIuPh7oi6vFMNPt1Xmb1XPxvN63aVc/edit?tab=t.0"
+)
 FORCE_UPDATE_LABEL = "Force Update"
 
 
@@ -81,6 +93,84 @@ def get_launcher_title():
             except Exception:
                 pass
     return "NP Rhino Tools\nVersion: {}\nUpdated: {}".format(version, updated)
+
+
+def open_guide_url():
+    """Open GUIDE_URL in the default browser (Rhino IronPython-safe)."""
+    url = GUIDE_URL
+    errors = []
+
+    # 1) macOS: os.system + open (works when subprocess/webbrowser do not)
+    try:
+        import sys
+        if sys.platform == "darwin":
+            status = os.system("open " + repr(url))
+            if status == 0:
+                return
+            errors.append("macOS open exit {}".format(status))
+    except Exception as ex:
+        errors.append("macOS open: {}".format(ex))
+
+    # 2) Rhino built-in command
+    try:
+        cmd = '_-OpenURL "{}" _Enter'.format(url.replace('"', '\\"'))
+        Rhino.RhinoApp.RunScript(cmd, False)
+        return
+    except Exception as ex:
+        errors.append("Rhino OpenURL: {}".format(ex))
+
+    # 3) Windows default handler
+    try:
+        import sys
+        if sys.platform.startswith("win"):
+            os.startfile(url)
+            return
+    except Exception as ex:
+        errors.append("startfile: {}".format(ex))
+
+    # 4) .NET Process (IronPython)
+    try:
+        import clr
+        clr.AddReference("System")
+        from System.Diagnostics import Process
+        import sys
+        if sys.platform == "darwin":
+            Process.Start("open", url)
+        else:
+            Process.Start(url)
+        return
+    except Exception as ex:
+        errors.append("Process.Start: {}".format(ex))
+
+    # 5) subprocess
+    try:
+        import subprocess
+        import sys
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+            return
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+            return
+    except Exception as ex:
+        errors.append("subprocess: {}".format(ex))
+
+    # 6) webbrowser (return value unreliable on macOS; still try)
+    try:
+        import webbrowser
+        webbrowser.open(url)
+        return
+    except Exception as ex:
+        errors.append("webbrowser: {}".format(ex))
+
+    detail = "\n".join(errors) if errors else "unknown"
+    rs.MessageBox(
+        "Could not open the guide in a browser. Copy this URL:\n\n{}\n\n({})".format(
+            url, detail
+        ),
+        0,
+        "NP Guide",
+    )
 
 
 def run_force_update():
@@ -112,12 +202,28 @@ def run_script_file(script_filename):
     return Rhino.RhinoApp.RunScript(command, False)
 
 
+def ensure_menu_alias():
+    """Give users the NPM alias for the Eto menu the first time they run NP."""
+    if not np_deploy or not hasattr(np_deploy, "ensure_command_alias"):
+        return
+    try:
+        np_deploy.ensure_command_alias("NPM", np_deploy.build_np_menu_alias_command(INSTALL_ROOT))
+    except Exception:
+        pass
+
+
 def main():
+    ensure_menu_alias()
     title = get_launcher_title()
-    labels = [label for label, _ in SCRIPT_CHOICES]
+    labels = [GUIDE_LABEL]
+    labels.extend(label for label, _ in SCRIPT_CHOICES)
     labels.append(FORCE_UPDATE_LABEL)
     selected = rs.ListBox(labels, title, "NP Launcher")
     if not selected:
+        return
+
+    if selected == GUIDE_LABEL:
+        open_guide_url()
         return
 
     if selected == FORCE_UPDATE_LABEL:

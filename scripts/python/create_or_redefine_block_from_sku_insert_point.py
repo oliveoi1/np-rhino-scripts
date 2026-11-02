@@ -265,7 +265,12 @@ def main():
         if rs.IsBlock(block_name):
             ok = delete_block_definition(block_name)
             if not ok and rs.IsBlock(block_name):
-                rs.MessageBox("Could not delete existing block definition.")
+                restore_saved_instances(block_name, saved_instances)
+                rs.MessageBox(
+                    "Could not replace block '{}'. Existing instances were put back.".format(
+                        block_name
+                    )
+                )
                 return
 
     result = rs.AddBlock(objs, insert_pt, block_name, delete_input=True)

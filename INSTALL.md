@@ -38,6 +38,8 @@ Tools are installed here:
 
 **Done.** In any Rhino file, type `NP` and press Enter to open the tool menu.
 
+**Optional: the tool window.** Type `NPM` for a window that lists the tools by category with search and favourites. `NP` creates the `NPM` alias for you the first time it runs; it points at `scripts/python/np_menu.py` inside the install folder.
+
 ---
 
 ## Windows — 3 steps
@@ -75,6 +77,8 @@ Tools are installed here:
 5. Click OK.
 
 **Done.** Type `NP` in Rhino and press Enter.
+
+**Optional: the tool window.** Type `NPM` for a window that lists the tools by category with search and favourites. `NP` creates the `NPM` alias for you the first time it runs; it points at `scripts/python/np_menu.py` inside the install folder.
 
 ---
 

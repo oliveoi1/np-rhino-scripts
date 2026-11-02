@@ -1,12 +1,14 @@
 # NP Rhino Tools — Quick Reference
 
-Run tools from the **NP** launcher (`np_launcher.py`). For full workflows and standards, use **Guide & Instructions** in the launcher (opens the [NP guide Google Doc](https://docs.google.com/document/d/1-wMRbW0fdt7HhVIuPh7oi6vFMNPt1Xmb1XPxvN63aVc/edit?tab=t.0)).
+Run tools from the **NP** launcher (`np_launcher.py`) or the **NPM** tool window (`np_menu.py`, see below). For full workflows and standards, use **Guide & Instructions** in the launcher (opens the [NP guide Google Doc](https://docs.google.com/document/d/1-wMRbW0fdt7HhVIuPh7oi6vFMNPt1Xmb1XPxvN63aVc/edit?tab=t.0)).
 
 **Dimensions** below are listed in inch fractions where scripts use inch-based constants. Your Rhino template should use inches (or equivalent scaling) unless noted (e.g. flipper holes in mm).
 
 **Launcher (not scripts):**
 - **Guide & Instructions** — opens the Google Doc above.
 - **Force Update** — reinstalls/refreshes NP tools from the deploy manifest.
+
+**NP Menu (window)** — alias **NPM**, or the first row of the NP list. An Eto window that lists every tool by category (Joinery, Holes & Inserts, Hardware, Blocks, Annotation, Drawings & Export, Templates) with a filter box (Enter runs the first match), a star to mark favourites, a Recent section, Guide and Force Update buttons, and the installed version in the footer. It stays open while tools run and remembers favourites, recents and its position in `_user_data/np_menu_state.json`. Both menus read the same `SCRIPT_CHOICES` table in `np_launcher.py`, so a tool added there appears in both. `NP` creates the `NPM` alias the first time it runs.
 
 ---
 
@@ -326,6 +328,38 @@ Run tools from the **NP** launcher (`np_launcher.py`). For full workflows and st
 **Requires:** Block instances whose insertion point is on the face with the shank along local -Z (all NP fitting blocks).
 
 **Blocks / layers:** Leaders on `NP-Assembly - Leaders` with a `Dashed` linetype (added to the file if missing). Fittings keep their own layer.
+
+---
+
+### 18 - Annotation Styles
+
+**What it does:** Applies one dimension style to every annotation (dimensions, leaders, text) in the document, or to the selected ones, clears per-object style overrides, makes that style current, and can delete the dimension styles that are then unused. Use it to make drawings from different people match.
+
+**Dimensions:** None. The chosen style and the purge choice are remembered in `_user_data/annotation_styles_defaults.json`.
+
+**Usage:**
+1. Pick the **style** from the list. Styles in the team template (`templates/NP_Annotation_Styles.3dm`) appear as **Team template: name** and are imported on the fly; a same-named style in the file is updated to match.
+2. Choose **All** or **Selected**.
+3. Choose whether to **delete unused styles** afterwards (only when applying to All).
+
+**Team template:** choose **Save a style to the team template...** to write one of the document's styles into `templates/NP_Annotation_Styles.3dm`, then commit and push it.
+
+**Requires:** Annotations inside block definitions are not changed.
+
+---
+
+### 19 - Display Modes
+
+**What it does:** Imports shared display modes (for example *NP Assembly*, *NP Render*) from `templates/display_modes/*.ini` into this Rhino, or saves one of your current display modes into that folder for the team.
+
+**Dimensions:** None.
+
+**Usage:**
+1. Choose **Import: name** (or **Import all team display modes**). A mode with the same id already in Rhino is updated in place, so re-importing refreshes it rather than duplicating it.
+2. Say **Yes** to apply it to the active viewport.
+3. **Save one of my display modes to the team folder...** exports a mode as `.ini`; commit and push the file so everyone receives it.
+
+**Requires:** `.ini` files in `templates/display_modes/` (the folder ships with the install).
 
 ---
 

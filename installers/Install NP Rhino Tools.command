@@ -117,4 +117,8 @@ echo ""
 echo "${ALIAS_CMD}" | pbcopy 2>/dev/null && echo "(Copied to clipboard - paste into Rhino alias NP)" || true
 echo ""
 echo "Then type NP in Rhino and press Enter for the tool menu."
+echo ""
+echo "OPTIONAL - NPM opens the tool window (categories, search, favourites)."
+echo "NP creates the NPM alias for you the first time it runs. To add it by hand:"
+echo "  alias NPM  ->  -_RunPythonScript \"${INSTALL_ROOT}/scripts/python/np_menu.py\""
 read -r -p "Press Enter to close..."

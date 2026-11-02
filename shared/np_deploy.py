@@ -572,6 +572,37 @@ def build_np_alias_command(install_root):
     return '-_RunPythonScript "{}"'.format(script_path)
 
 
+def build_np_menu_alias_command(install_root):
+    """Alias NPM runs the Eto menu directly; it lives in scripts/, which updates replace."""
+    script_path = os.path.join(install_root, "scripts", "python", "np_menu.py")
+    script_path = os.path.abspath(script_path)
+    return '-_RunPythonScript "{}"'.format(script_path)
+
+
+def ensure_command_alias(name, macro, overwrite=False):
+    """
+    Create a Rhino command alias if it does not exist (or update it when overwrite).
+    Returns True when the alias was added or changed. Safe to call outside Rhino.
+    """
+    try:
+        import Rhino
+        aliases = Rhino.ApplicationSettings.CommandAliasList
+    except Exception:
+        return False
+    try:
+        existing = aliases.GetMacro(name)
+    except Exception:
+        existing = None
+    if existing and not overwrite:
+        return False
+    try:
+        if existing:
+            return bool(aliases.SetMacro(name, macro))
+        return bool(aliases.Add(name, macro))
+    except Exception:
+        return False
+
+
 def install_from_zip_url(zip_url, install_root, repo_hint=None):
     """Used by installers for first-time setup."""
     ensure_runtime_folders(install_root)

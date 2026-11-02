@@ -228,16 +228,20 @@ def main():
 
     saved_instances = []
     restored_count = 0
-    block_already_exists = rs.IsBlock(block_name)
 
-    if block_already_exists:
+    if rs.IsBlock(block_name):
         saved_instances = collect_existing_instances(block_name)
         delete_saved_instances(saved_instances)
 
         if rs.IsBlock(block_name):
             ok = delete_block_definition(block_name)
             if not ok and rs.IsBlock(block_name):
-                rs.MessageBox("Could not delete existing block definition.")
+                restore_saved_instances(block_name, saved_instances)
+                rs.MessageBox(
+                    "Could not replace block '{}'. Existing instances were put back.".format(
+                        block_name
+                    )
+                )
                 return
 
     result = rs.AddBlock(objs, insert_pt, block_name, delete_input=True)
@@ -245,20 +249,19 @@ def main():
         rs.MessageBox("Block creation failed.")
         return
 
-    instance_id = None
-
-    if block_already_exists:
+    if saved_instances:
         restored_count = restore_saved_instances(block_name, saved_instances)
-    else:
-        instance_id = rs.InsertBlock(block_name, insert_pt)
-        if instance_id:
-            ensure_layer(FURNITURE_LAYER)
-            rs.ObjectLayer(instance_id, FURNITURE_LAYER)
-            rs.SelectObject(instance_id)
 
-    if block_already_exists:
+    instance_id = rs.InsertBlock(block_name, insert_pt)
+
+    if instance_id:
+        ensure_layer(FURNITURE_LAYER)
+        rs.ObjectLayer(instance_id, FURNITURE_LAYER)
+        rs.SelectObject(instance_id)
+
+    if saved_instances:
         rs.MessageBox(
-            "Block '{}' updated.\nRestored instances: {}".format(
+            "Block '{}' updated.\nRestored instances: {}\nNew instance inserted.".format(
                 block_name,
                 restored_count
             )

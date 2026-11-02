@@ -1,3 +1,5 @@
+#! python 3
+# -*- coding: utf-8 -*-
 """
 NP Menu: a window that lists every NP tool by category.
 
@@ -60,7 +62,9 @@ CHOICE_FILENAME = "np_menu_choice.json"
 # the tool. Each script exposes menu_items() and reads the chosen entry from
 # _user_data/np_menu_choice.json, skipping its own list dialog.
 SUBMENU_TOOLS = [
+    "01 extrude_curves.py",
     "15 insert_block.py",
+    "16 snapshot_2d_export.py",
     "19 display_modes.py",
     "18 annotation_styles.py",
 ]

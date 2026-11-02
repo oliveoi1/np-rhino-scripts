@@ -23,6 +23,45 @@ FORMATS = [
     ("Snapshot view (.png)", ".png", "cartoon"),
 ]
 
+
+# --- choice handed over by the NP Menu window --------------------------------
+# The window writes _user_data/np_menu_choice.json just before launching this
+# script; when the entry is recent and meant for this script, its list dialog
+# is skipped. A file is used (not sc.sticky) so it works across interpreters.
+
+_MENU_THIS_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else ""
+_INSTALL_ROOT = os.path.abspath(os.path.join(_MENU_THIS_DIR, "..", ".."))
+
+
+def take_menu_choice(valid_choices):
+    import json
+    import time
+    path = os.path.join(_INSTALL_ROOT, "_user_data", "np_menu_choice.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as handle:
+            data = json.load(handle)
+    except Exception:
+        data = None
+    try:
+        os.remove(path)
+    except Exception:
+        pass
+    if not isinstance(data, dict):
+        return None
+    if data.get("script") != os.path.basename(__file__):
+        return None
+    if time.time() - float(data.get("time", 0)) > 120:
+        return None
+    choice = data.get("choice")
+    return choice if choice in valid_choices else None
+
+
+def menu_items():
+    """File types offered by the list dialog and by the NP Menu drawer."""
+    return [label for label, _ext, _style in FORMATS]
+
 RENDER_LONG_EDGE = 4800
 RENDER_DPI = 300.0
 RENDER_SUPERSAMPLE = 2
@@ -32,7 +71,14 @@ LAYER_NAME = "2d"
 PAGE_WIDTH_IN = 16.0
 PAGE_HEIGHT_IN = 10.0
 PAGE_MARGIN_IN = 0.5
-SILHOUETTE_NONE = getattr(Rhino.Geometry.SilhouetteType, "None")
+# IronPython spells the enum member "None"; pythonnet (Python 3) uses "NONE".
+SILHOUETTE_NONE = None
+for _name in ("None", "NONE", "None_"):
+    SILHOUETTE_NONE = getattr(Rhino.Geometry.SilhouetteType, _name, None)
+    if SILHOUETTE_NONE is not None:
+        break
+if SILHOUETTE_NONE is None:
+    SILHOUETTE_NONE = System.Enum.ToObject(Rhino.Geometry.SilhouetteType, 0)
 SILHOUETTE_TANGENT = getattr(Rhino.Geometry.SilhouetteType, "Tangent", None)
 
 
@@ -883,8 +929,10 @@ def main():
         rs.MessageBox("This file has no snapshots.", 0, "Snapshot 2D Export")
         return
 
-    format_labels = [label for label, _ext, _style in FORMATS]
-    format_choice = rs.ListBox(format_labels, "Choose the file type", "Snapshot 2D Export")
+    format_labels = menu_items()
+    format_choice = take_menu_choice(format_labels)
+    if not format_choice:
+        format_choice = rs.ListBox(format_labels, "Choose the file type", "Snapshot 2D Export")
     if not format_choice:
         return
     extension = None
@@ -996,4 +1044,5 @@ def main():
     rs.MessageBox("\n".join(lines), 0, "Snapshot 2D Export")
 
 
-main()
+if __name__ == "__main__":
+    main()

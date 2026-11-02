@@ -1,3 +1,5 @@
+#! python 3
+# -*- coding: utf-8 -*-
 """
 Explode fittings for assembly diagrams.
 

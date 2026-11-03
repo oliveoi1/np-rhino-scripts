@@ -11,6 +11,7 @@ import json
 import os
 import platform
 import shutil
+import stat
 import sys
 import time
 import traceback
@@ -62,14 +63,68 @@ def makedirs_safe(path):
             raise
 
 
-def rmtree_safe(path):
-    """Remove directory tree; compatible with Python 2.7 (no ignore_errors on rmtree)."""
+def rmtree_safe(path, attempts=4):
+    """Remove a directory tree and return True when it is gone. Never raises.
+    Retries with short pauses and clears read-only bits, because on Windows a
+    sync client (OneDrive on Documents) or Explorer can hold files briefly."""
     if not os.path.exists(path):
-        return
-    try:
-        shutil.rmtree(path)
-    except Exception:
-        pass
+        return True
+
+    def on_error(func, name, exc_info):
+        try:
+            os.chmod(name, stat.S_IWRITE)
+            func(name)
+        except Exception:
+            pass
+
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path, onerror=on_error)
+        except Exception:
+            pass
+        if not os.path.exists(path):
+            return True
+        time.sleep(0.3 * (attempt + 1))
+    return not os.path.exists(path)
+
+
+def copy_file_retry(src, dst, attempts=4):
+    """copy2 with retries; overwrites a read-only destination."""
+    last = None
+    for attempt in range(attempts):
+        try:
+            if os.path.isfile(dst):
+                try:
+                    os.chmod(dst, stat.S_IWRITE)
+                except Exception:
+                    pass
+            shutil.copy2(src, dst)
+            return
+        except Exception as exc:
+            last = exc
+            time.sleep(0.3 * (attempt + 1))
+    raise last
+
+
+def copy_tree_merge(src, dst):
+    """Copy src over dst file by file; dst may already exist."""
+    for root, _dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target = dst if rel == "." else os.path.join(dst, rel)
+        makedirs_safe(target)
+        for name in files:
+            copy_file_retry(os.path.join(root, name), os.path.join(target, name))
+
+
+def copy_dir_replace(src, dst):
+    """Make dst a copy of src. Deletes dst first; when the delete does not
+    finish (locked files), copies over the existing tree instead of failing
+    with 'directory already exists'. Returns 'copied' or 'merged'."""
+    if os.path.exists(dst) and not rmtree_safe(dst):
+        copy_tree_merge(src, dst)
+        return "merged"
+    shutil.copytree(src, dst)
+    return "copied"
 
 
 def get_user_install_root():
@@ -358,12 +413,10 @@ def copy_app_item(src_root, dst_root, rel_item):
     src = os.path.join(src_root, rel_item)
     dst = os.path.join(dst_root, rel_item)
     if os.path.isdir(src):
-        if os.path.exists(dst):
-            rmtree_safe(dst)
-        shutil.copytree(src, dst)
+        copy_dir_replace(src, dst)
     elif os.path.isfile(src):
         makedirs_safe(os.path.dirname(dst))
-        shutil.copy2(src, dst)
+        copy_file_retry(src, dst)
     else:
         raise IOError("App item not found: {}".format(rel_item))
 
@@ -407,15 +460,15 @@ def replace_live_app_files(install_root, manifest):
         if not os.path.exists(src):
             raise IOError("Staged item missing: {}".format(item))
         try:
-            if os.path.isdir(dst):
-                rmtree_safe(dst)
-            elif os.path.isfile(dst):
-                os.remove(dst)
             if os.path.isdir(src):
-                shutil.copytree(src, dst)
+                if copy_dir_replace(src, dst) == "merged":
+                    log_message(install_root,
+                                "Could not delete {}; copied the new files over it".format(item), "WARN")
             else:
+                if os.path.isdir(dst):
+                    rmtree_safe(dst)
                 makedirs_safe(os.path.dirname(dst))
-                shutil.copy2(src, dst)
+                copy_file_retry(src, dst)
         except Exception as exc:
             locked.append((item, str(exc)))
     if locked:

@@ -36,8 +36,17 @@ function Install-FromFolder {
         $src = Join-Path $SourceRoot $item
         $dst = Join-Path $InstallRoot $item
         if (Test-Path $src -PathType Container) {
-            if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
-            Copy-Item $src $dst -Recurse -Force
+            # Copy over the existing folder (never empty it first: a file held open by
+            # a sync client or by Rhino would otherwise leave a half-deleted install), then drop
+            # files the package no longer has.
+            New-Item -ItemType Directory -Force -Path $dst | Out-Null
+            Copy-Item (Join-Path $src "*") $dst -Recurse -Force
+            Get-ChildItem $dst -Recurse -File | ForEach-Object {
+                $rel = $_.FullName.Substring($dst.Length).TrimStart("\")
+                if (-not (Test-Path (Join-Path $src $rel))) {
+                    Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+                }
+            }
         } elseif (Test-Path $src -PathType Leaf) {
             $parent = Split-Path $dst -Parent
             if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }

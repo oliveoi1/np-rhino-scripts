@@ -17,6 +17,10 @@ import time
 import traceback
 import zipfile
 
+# Bumped whenever the update mechanics change; a package whose np_deploy has a
+# higher revision applies itself (see apply_update_with_package_updater).
+UPDATER_REVISION = 2
+
 try:
     from urllib.error import URLError
     from urllib.request import urlopen, Request
@@ -58,15 +62,19 @@ def makedirs_safe(path):
         return
     try:
         os.makedirs(path)
-    except OSError:
-        if not os.path.isdir(path):
-            raise
+    except OSError as exc:
+        if os.path.isdir(path) or os.path.exists(path):
+            return
+        if getattr(exc, "errno", None) == 17 or "exists" in str(exc).lower():
+            return
+        raise
 
 
 def rmtree_safe(path, attempts=4):
     """Remove a directory tree and return True when it is gone. Never raises.
     Retries with short pauses and clears read-only bits, because on Windows a
-    sync client (OneDrive on Documents) or Explorer can hold files briefly."""
+    sync client (Google Drive, OneDrive), Explorer, or Rhino holding a texture
+    or block file open can block a delete."""
     if not os.path.exists(path):
         return True
 
@@ -116,15 +124,37 @@ def copy_tree_merge(src, dst):
             copy_file_retry(os.path.join(root, name), os.path.join(target, name))
 
 
+def prune_tree(src, dst):
+    """Best effort: remove files and folders in dst that src does not have.
+    Returns the relative paths it could not remove."""
+    left = []
+    for root, dirs, files in os.walk(dst, topdown=False):
+        rel = os.path.relpath(root, dst)
+        src_dir = src if rel == "." else os.path.join(src, rel)
+        for name in files:
+            if not os.path.isfile(os.path.join(src_dir, name)):
+                target = os.path.join(root, name)
+                try:
+                    os.chmod(target, stat.S_IWRITE)
+                    os.remove(target)
+                except Exception:
+                    left.append(os.path.relpath(target, dst))
+        for name in dirs:
+            if not os.path.isdir(os.path.join(src_dir, name)):
+                target = os.path.join(root, name)
+                if not rmtree_safe(target, attempts=1):
+                    left.append(os.path.relpath(target, dst))
+    return left
+
+
 def copy_dir_replace(src, dst):
-    """Make dst a copy of src. Deletes dst first; when the delete does not
-    finish (locked files), copies over the existing tree instead of failing
-    with 'directory already exists'. Returns 'copied' or 'merged'."""
-    if os.path.exists(dst) and not rmtree_safe(dst):
-        copy_tree_merge(src, dst)
-        return "merged"
-    shutil.copytree(src, dst)
-    return "copied"
+    """Make dst match src without ever emptying dst first: copy the new files
+    over the old ones, then remove what src no longer has. A file that is held
+    open (a sync client, Rhino using a texture or block file) therefore only
+    leaves a stale extra behind instead of an install with no scripts. Returns
+    the stale leftovers."""
+    copy_tree_merge(src, dst)
+    return prune_tree(src, dst)
 
 
 def get_user_install_root():
@@ -438,7 +468,10 @@ def restore_app_files_from_backup(install_root, manifest):
     for item in get_app_items_from_manifest(manifest):
         src = os.path.join(backup_root, item)
         if os.path.exists(src):
-            copy_app_item(backup_root, install_root, item)
+            try:
+                copy_app_item(backup_root, install_root, item)
+            except Exception as exc:
+                log_message(install_root, "Rollback of {} failed: {}".format(item, exc), "ERROR")
     return True
 
 
@@ -461,9 +494,10 @@ def replace_live_app_files(install_root, manifest):
             raise IOError("Staged item missing: {}".format(item))
         try:
             if os.path.isdir(src):
-                if copy_dir_replace(src, dst) == "merged":
-                    log_message(install_root,
-                                "Could not delete {}; copied the new files over it".format(item), "WARN")
+                left = copy_dir_replace(src, dst)
+                if left:
+                    log_message(install_root, "Stale files left in {} (in use): {}".format(
+                        item, ", ".join(left[:10])), "WARN")
             else:
                 if os.path.isdir(dst):
                     rmtree_safe(dst)
@@ -505,9 +539,40 @@ def apply_atomic_update(install_root, package_root, manifest):
     try:
         replace_live_app_files(install_root, manifest)
     except Exception:
-        restore_app_files_from_backup(install_root, manifest)
+        try:
+            restore_app_files_from_backup(install_root, manifest)
+        except Exception:
+            log_message(install_root, traceback.format_exc(), "ERROR")
         raise
     return True
+
+
+def apply_update_with_package_updater(install_root, package_root, manifest):
+    """Apply the update with the np_deploy.py that came in the package when it
+    is newer than this one, so a fix to the updater itself takes effect on the
+    very update that delivers it."""
+    candidate = os.path.join(package_root, "shared", "np_deploy.py")
+    updater = None
+    if os.path.isfile(candidate):
+        try:
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("np_deploy_package", candidate)
+                updater = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(updater)
+            except ImportError:
+                import imp
+                updater = imp.load_source("np_deploy_package", candidate)
+        except Exception:
+            log_message(install_root, "Package updater not usable, using the installed one:\n"
+                        + traceback.format_exc(), "WARN")
+            updater = None
+    if updater is not None and getattr(updater, "UPDATER_REVISION", 0) > UPDATER_REVISION \
+            and hasattr(updater, "apply_atomic_update"):
+        log_message(install_root, "Applying with the package updater (revision {})".format(
+            updater.UPDATER_REVISION), "INFO")
+        return updater.apply_atomic_update(install_root, package_root, manifest)
+    return apply_atomic_update(install_root, package_root, manifest)
 
 
 def fetch_remote_manifest(install_root):
@@ -568,7 +633,7 @@ def check_and_update(install_root, force=False):
 
     try:
         package_root = download_and_extract_zip(zip_url, install_root)
-        apply_atomic_update(install_root, package_root, remote_manifest)
+        apply_update_with_package_updater(install_root, package_root, remote_manifest)
         result["updated"] = True
         result["message"] = "Updated to version {}".format(remote_manifest.get("version"))
         log_message(install_root, result["message"], "INFO")

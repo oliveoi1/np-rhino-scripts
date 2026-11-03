@@ -752,8 +752,49 @@ def panel_guid():
     return System.Guid(PANEL_GUID)
 
 
-def host_plugin():
-    return Rhino.PlugIns.PlugIn.Find(System.Guid(HOST_PLUGIN_ID))
+# Plug-ins that may host the panel, in order of preference. Any loaded .NET
+# plug-in will do: RegisterPanel only uses it as the panel's owner.
+HOST_PLUGIN_NAMES = ("RhinoCodePlugin", "RhinoCode", "IronPython", "Commands",
+                     "RDK_EtoUI", "RhinoCycles", "Rhino Render")
+
+
+def host_plugin(preferred_id=HOST_PLUGIN_ID):
+    """A loaded .NET plug-in to own the panel. The RhinoCode plug-in by id
+    first, then by name, then any loaded .NET plug-in (ids differ between
+    builds and PlugIn.Find only sees plug-ins that are loaded)."""
+    try:
+        plugin = Rhino.PlugIns.PlugIn.Find(System.Guid(preferred_id))
+        if plugin is not None:
+            return plugin
+    except Exception:
+        pass
+    installed = []
+    try:
+        for pair in Rhino.PlugIns.PlugIn.GetInstalledPlugIns():
+            installed.append((str(pair.Value), pair.Key))
+    except Exception:
+        log(traceback.format_exc(), "ERROR")
+    by_name = dict((name.lower(), guid) for name, guid in installed)
+    for name in HOST_PLUGIN_NAMES:
+        guid = by_name.get(name.lower())
+        if guid is None:
+            continue
+        plugin = Rhino.PlugIns.PlugIn.Find(guid)
+        if plugin is None and name.lower() in ("rhinocodeplugin", "rhinocode", "ironpython"):
+            try:
+                Rhino.PlugIns.PlugIn.LoadPlugIn(guid)
+                plugin = Rhino.PlugIns.PlugIn.Find(guid)
+            except Exception:
+                plugin = None
+        if plugin is not None:
+            return plugin
+    for name, guid in installed:
+        plugin = Rhino.PlugIns.PlugIn.Find(guid)
+        if plugin is not None:
+            return plugin
+    log("No host plug-in for the panel. Installed: {}".format(
+        ", ".join(sorted(name for name, _ in installed))), "ERROR")
+    return None
 
 
 def panel_instances():
@@ -848,7 +889,8 @@ def register_panel():
     the host plug-in is missing; an already-registered panel counts as success."""
     plugin = host_plugin()
     if plugin is None:
-        Rhino.RhinoApp.WriteLine("NP Menu: the RhinoCode plug-in is not loaded; the panel needs Rhino 8.")
+        Rhino.RhinoApp.WriteLine(
+            "NP Menu: no plug-in could host the panel (see _logs/np_deploy.log); the panel needs Rhino 8.")
         return False
     hook_events()
     try:

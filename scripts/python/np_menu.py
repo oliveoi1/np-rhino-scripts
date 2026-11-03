@@ -611,9 +611,18 @@ class NPMenuView(forms.Panel):
         self.refresh_later()
 
     def launch(self, macro, filename):
-        focus_rhino()
-        if not Rhino.RhinoApp.RunScript(macro, False):
-            Rhino.RhinoApp.WriteLine("NP Menu: could not run {}".format(filename))
+        """Run the macro once the click that asked for it has finished. A script
+        started inside the button event runs nested in that mouse event, and
+        Rhino then wants a second click for every pick and every Done. Rhino's
+        own toolbar buttons start macros the same deferred way."""
+        def go():
+            focus_rhino()
+            try:
+                if not Rhino.RhinoApp.RunScript(macro, False):
+                    Rhino.RhinoApp.WriteLine("NP Menu: could not run {}".format(filename))
+            except Exception:
+                log(traceback.format_exc(), "ERROR")
+        forms.Application.Instance.AsyncInvoke(go)
 
     def launch_when_idle(self, macro, filename, timeout=3.0):
         """Poll until the cancelled command has exited, then launch."""

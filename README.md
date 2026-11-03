@@ -13,7 +13,7 @@ No GitHub knowledge required.
 | **Windows** | [Install NP Rhino Tools.ps1](https://github.com/oliveoi1/np-rhino-scripts/raw/main/installers/Install%20NP%20Rhino%20Tools.ps1) |
 
 After install: create Rhino alias **NP**, then type `NP` in Rhino.  
-Type `NPM` for the tool window (categories, search, favourites); `NP` creates that alias on first run.
+Type `NPP` for the NP Tools panel (docks beside Layers; categories, search, favourites); `NP` creates that alias on first run, and `NPP` adds itself to Rhino's startup commands so the panel comes back after a restart.
 
 ## How updates work
 
@@ -26,7 +26,7 @@ Type `NPM` for the tool window (categories, search, favourites); `NP` creates th
 | Problem | What to do |
 |--------|------------|
 | `NP` does nothing | Confirm alias points to `run_np_launcher.py` in Documents |
-| `NPM` does nothing | Run `NP` once (it creates the alias), or point `NPM` at `scripts/python/np_menu.py` |
+| `NPP` does nothing | Run `NP` once (it creates the alias), or point `NPP` at `scripts/python/np_menu.py` |
 | Update errors | Check `Documents/NP Rhino Scripts/_logs/np_deploy.log` |
 | Skip updates | Create `_user_data/skip_update.txt` |
 

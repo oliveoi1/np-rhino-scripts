@@ -38,7 +38,7 @@ Tools are installed here:
 
 **Done.** In any Rhino file, type `NP` and press Enter to open the tool menu.
 
-**Optional: the tool window.** Type `NPM` for a window that lists the tools by category with search and favourites. `NP` creates the `NPM` alias for you the first time it runs; it points at `scripts/python/np_menu.py` inside the install folder.
+**Optional: the tool panel.** Type `NPP` for the NP Tools panel, a Rhino panel like Layers that lists the tools by category with search and favourites; drag its tab into the sidebar or leave it floating. `NP` creates the `NPP` alias for you the first time it runs; it points at `scripts/python/np_menu.py` inside the install folder. The first `NPP` also adds `np_menu_startup.py` to Rhino's startup commands (Options > General) so the panel is back after a restart.
 
 ---
 
@@ -78,7 +78,7 @@ Tools are installed here:
 
 **Done.** Type `NP` in Rhino and press Enter.
 
-**Optional: the tool window.** Type `NPM` for a window that lists the tools by category with search and favourites. `NP` creates the `NPM` alias for you the first time it runs; it points at `scripts/python/np_menu.py` inside the install folder.
+**Optional: the tool panel.** Type `NPP` for the NP Tools panel, a Rhino panel like Layers that lists the tools by category with search and favourites; drag its tab into the sidebar or leave it floating. `NP` creates the `NPP` alias for you the first time it runs; it points at `scripts/python/np_menu.py` inside the install folder. The first `NPP` also adds `np_menu_startup.py` to Rhino's startup commands (Options > General) so the panel is back after a restart.
 
 ---
 

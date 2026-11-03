@@ -86,7 +86,7 @@ Write-Host "(Copied to clipboard - paste into Rhino alias NP)"
 Write-Host ""
 Write-Host "Then type NP in Rhino and press Enter for the tool menu."
 Write-Host ""
-Write-Host "OPTIONAL - NPM opens the tool window (categories, search, favourites)."
-Write-Host "NP creates the NPM alias for you the first time it runs. To add it by hand:"
-Write-Host ('  alias NPM  ->  -_RunPythonScript "' + (Join-Path $InstallRoot "scripts\python\np_menu.py") + '"')
+Write-Host "OPTIONAL - NPP opens the NP Tools panel (docks beside Layers; categories, search, favourites)."
+Write-Host "NP creates the NPP alias for you the first time it runs. To add it by hand:"
+Write-Host ('  alias NPP  ->  -_RunPythonScript "' + (Join-Path $InstallRoot "scripts\python\np_menu.py") + '"')
 Read-Host "Press Enter to close"

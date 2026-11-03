@@ -28,7 +28,7 @@ except ImportError:
 
 
 SCRIPT_CHOICES = [
-    ("NP Menu (window)", "np_menu.py"),
+    ("NP Menu (panel)", "np_menu.py"),
     ("01 - Extrude Curves", "01 extrude_curves.py"),
     ("01a - Extrude Ply Bands", "01a_extrude_ply_bands.py"),
     ("02 - Dado Recess", "02 dado_recess.py"),
@@ -203,11 +203,11 @@ def run_script_file(script_filename):
 
 
 def ensure_menu_alias():
-    """Give users the NPM alias for the Eto menu the first time they run NP."""
+    """Give users the NPP alias for the tool panel the first time they run NP."""
     if not np_deploy or not hasattr(np_deploy, "ensure_command_alias"):
         return
     try:
-        np_deploy.ensure_command_alias("NPM", np_deploy.build_np_menu_alias_command(INSTALL_ROOT))
+        np_deploy.ensure_command_alias("NPP", np_deploy.build_np_menu_alias_command(INSTALL_ROOT))
     except Exception:
         pass
 

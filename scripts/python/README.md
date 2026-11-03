@@ -1,6 +1,6 @@
 # Python Scripts
 
-Deployment: run **`np_launcher.py`** from Rhino (alias **NP**), or **`np_menu.py`** (alias **NPM**) for the categorised tool window. Both read the same `SCRIPT_CHOICES` table. Updates via `shared/np_deploy.py`. See repo root [README.md](../../README.md).
+Deployment: run **`np_launcher.py`** from Rhino (alias **NP**), or **`np_menu.py`** (alias **NPP**) for the categorised NP Tools panel. Both read the same `SCRIPT_CHOICES` table. Updates via `shared/np_deploy.py`. See repo root [README.md](../../README.md).
 
 ## Documentation
 
@@ -45,7 +45,8 @@ Matches `SCRIPT_CHOICES` in `np_launcher.py`:
 - `17 explode_fittings.py`
 - `18 annotation_styles.py`
 - `19 display_modes.py`
-- `np_menu.py` (Eto tool window, alias NPM)
+- `np_menu.py` (NP Tools panel, alias NPP)
+- `np_menu_startup.py` (re-registers the panel at Rhino startup; NPP adds it to the startup commands)
 
 ## Notes
 

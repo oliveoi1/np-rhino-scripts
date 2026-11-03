@@ -573,7 +573,7 @@ def build_np_alias_command(install_root):
 
 
 def build_np_menu_alias_command(install_root):
-    """Alias NPM runs the Eto menu directly; it lives in scripts/, which updates replace."""
+    """Alias NPP runs the tool panel directly; it lives in scripts/, which updates replace."""
     script_path = os.path.join(install_root, "scripts", "python", "np_menu.py")
     script_path = os.path.abspath(script_path)
     return '-_RunPythonScript "{}"'.format(script_path)

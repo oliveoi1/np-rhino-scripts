@@ -1,5 +1,5 @@
 {
-  "version": "0.1.64",
+  "version": "0.1.65",
   "branch": "main",
   "updated": "2026-11-02",
   "appFolders": [
@@ -15,6 +15,7 @@
     "run_np_launcher.py",
     "shared/np_deploy.py",
     "shared/group_cut_utils.py",
-    "scripts/python/np_menu.py"
+    "scripts/python/np_menu.py",
+    "scripts/python/np_menu_startup.py"
   ]
 }

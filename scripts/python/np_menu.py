@@ -1,16 +1,25 @@
 #! python 3
 # -*- coding: utf-8 -*-
 """
-NP Menu: a window that lists every NP tool by category.
+NP Menu: a dockable Rhino panel that lists every NP tool by category.
 
-Rhino alias NPM runs this file directly. It can also be opened from the
-classic NP list ("NP Menu (window)"). Both front ends read the same tool
+Rhino alias NPP runs this file directly. It can also be opened from the
+classic NP list ("NP Menu (panel)"). Both front ends read the same tool
 table, SCRIPT_CHOICES in np_launcher.py, so adding a tool there puts it in
 both menus. The classic NP launcher is untouched by this file.
 
-The window stays open while tools run, remembers favourites, recent tools
-and its position in _user_data/np_menu_state.json, and runs the same daily
-update check as NP when it is opened.
+The menu is a real Rhino panel (like Layers or Properties): it docks as a tab
+in the sidebar, floats, collapses and is listed in the sidebar's panel menu.
+Rhino only accepts a panel class that carries a .NET Guid attribute, which a
+Python class cannot, so panel_type() emits a tiny .NET subclass of Eto Panel
+at runtime and the RhinoCode plug-in that ships with Rhino 8 hosts it. The
+content of each panel instance is built here in Python.
+
+Registration lasts one Rhino session, so NPP also adds np_menu_startup.py to
+Rhino's startup commands (Options > General); that script re-registers the
+panel and reopens it when it was open last time. Favourites, recents and
+open drawers live in _user_data/np_menu_state.json. NPP runs the same daily
+update check as NP.
 """
 
 import json
@@ -50,13 +59,23 @@ except ImportError:
     np_deploy = None
 
 
-STICKY_KEY = "np_menu_form"
 STATE_FILENAME = "np_menu_state.json"
 MENU_FILENAME = "np_menu.py"
-MENU_ALIAS = "NPM"
+STARTUP_FILENAME = "np_menu_startup.py"
+MENU_ALIAS = "NPP"
 MAX_RECENT = 6
 OTHER_TITLE = "Other"
 CHOICE_FILENAME = "np_menu_choice.json"
+
+PANEL_TITLE = "NP Tools"
+PANEL_GUID = "6e2f4a9c-3b7d-4c15-9a8e-5d1f0b2c7e43"   # fixed: Rhino remembers the panel by it
+PANEL_ASSEMBLY = "NPMenuPanel_" + PANEL_GUID.replace("-", "")
+PANEL_TYPE_NAME = PANEL_ASSEMBLY + ".NPMenuPanel"
+HOST_PLUGIN_ID = "c9cba87a-23ce-4f15-a918-97645c05cde7"  # RhinoCodePlugin, ships with Rhino 8
+STICKY_VIEWS = "np_menu_views"            # live NPMenuView instances, one per panel
+STICKY_SHOW_HANDLER = "np_menu_show_handler"
+STICKY_CLOSING_HANDLER = "np_menu_closing_handler"
+STICKY_CLOSING = "np_menu_rhino_closing"
 
 # Tools whose first step is a list: the window shows that list as a drawer under
 # the tool. Each script exposes menu_items() and reads the chosen entry from
@@ -132,7 +151,7 @@ def state_path():
 
 
 def load_state():
-    state = {"favourites": [], "recent": [], "expanded": [], "window": None}
+    state = {"favourites": [], "recent": [], "expanded": [], "panel_open": True}
     path = state_path()
     if os.path.isfile(path):
         try:
@@ -142,9 +161,7 @@ def load_state():
                 state["favourites"] = [f for f in saved.get("favourites", []) if isinstance(f, str)]
                 state["recent"] = [f for f in saved.get("recent", []) if isinstance(f, str)]
                 state["expanded"] = [f for f in saved.get("expanded", []) if isinstance(f, str)]
-                window = saved.get("window")
-                if isinstance(window, dict):
-                    state["window"] = window
+                state["panel_open"] = bool(saved.get("panel_open", True))
         except Exception:
             pass
     return state
@@ -184,6 +201,16 @@ def build_groups():
     if rest:
         groups.append((OTHER_TITLE, rest))
     return groups
+
+
+def make_key(filename, choice=None):
+    """State key: a tool is its filename, a drawer choice is 'filename::choice'."""
+    return filename if not choice else filename + "::" + choice
+
+
+def split_key(key):
+    parts = str(key).split("::", 1)
+    return parts[0], (parts[1] if len(parts) > 1 else None)
 
 
 def labels_by_file(groups):
@@ -245,6 +272,23 @@ def log(message, level="INFO"):
     Rhino.RhinoApp.WriteLine("NP Menu: " + message)
 
 
+def style_label(label, size, bold=False, color=None):
+    """Font, colour and left alignment for a label. Rhino's panel host restyles
+    labels when they load (right-aligned, default font), so apply the style now
+    and again on LoadComplete."""
+    def apply(sender=None, e=None):
+        try:
+            label.Font = drawing.Font(drawing.SystemFont.Bold if bold else drawing.SystemFont.Default, size)
+            label.TextAlignment = forms.TextAlignment.Left
+            if color is not None:
+                label.TextColor = color
+        except Exception:
+            pass
+    apply()
+    label.LoadComplete += apply
+    return label
+
+
 def left_align(button):
     """Eto has no text alignment on Button; set it on the native control."""
     native = button.ControlObject
@@ -262,26 +306,17 @@ def left_align(button):
         pass
 
 
-# ----------------------------------------------------------------- form ---
+# ----------------------------------------------------------------- view ---
 
-class NPMenuForm(forms.Form):
+class NPMenuView(forms.Panel):
+    """The menu itself. One instance fills each Rhino panel instance."""
 
     def __init__(self):
         super().__init__()
         self.state = load_state()
         self.groups = build_groups()
         self.by_file = labels_by_file(self.groups)
-
-        self.Title = "NP Rhino Tools"
-        self.Padding = drawing.Padding(10)
-        self.Resizable = True
-        self.Maximizable = False
-        self.MinimumSize = drawing.Size(360, 420)
-        self.ClientSize = drawing.Size(400, 700)
-        try:
-            self.Owner = Rhino.UI.RhinoEtoApp.MainWindow
-        except Exception:
-            pass
+        self.Padding = drawing.Padding(6)
 
         self.search = forms.SearchBox()
         self.search.PlaceholderText = "Filter tools...  (Enter runs the first match)"
@@ -297,8 +332,7 @@ class NPMenuForm(forms.Form):
 
         self.version_label = forms.Label()
         self.version_label.Text = version_text()
-        self.version_label.TextColor = drawing.Colors.Gray
-        self.version_label.Font = drawing.Font(drawing.SystemFont.Default, 9)
+        style_label(self.version_label, 9, color=drawing.Colors.Gray)
 
         guide_btn = forms.Button()
         guide_btn.Text = "Guide"
@@ -310,15 +344,10 @@ class NPMenuForm(forms.Form):
         update_btn.ToolTip = "Download the latest tools now"
         update_btn.Click += self.on_force_update
 
-        close_btn = forms.Button()
-        close_btn.Text = "Close"
-        close_btn.Click += lambda sender, e: self.Close()
-        self.AbortButton = close_btn
-
         footer = forms.DynamicLayout()
         footer.Spacing = drawing.Size(6, 6)
         footer.AddRow(self.version_label)
-        footer.AddRow(guide_btn, update_btn, None, close_btn)
+        footer.AddRow(guide_btn, update_btn, None)
 
         layout = forms.DynamicLayout()
         layout.Spacing = drawing.Size(6, 8)
@@ -328,7 +357,6 @@ class NPMenuForm(forms.Form):
         self.Content = layout
 
         self._entries = {}
-        self.Closed += self.on_closed
         self.rebuild()
 
     # ------------------------------------------------------------ build --
@@ -336,34 +364,54 @@ class NPMenuForm(forms.Form):
     def query_words(self):
         return [w for w in (self.search.Text or "").lower().split() if w]
 
-    def matches(self, label, filename):
+    def matches(self, label, filename, choice=None):
         words = self.query_words()
         if not words:
             return True
-        haystack = (label + " " + filename).lower()
+        haystack = (label + " " + filename + " " + (choice or "")).lower()
         return all(w in haystack for w in words)
 
     def visible_tools(self):
-        """Ordered (label, filename) rows that pass the filter, no repeats."""
+        """Ordered (label, filename, choice) rows that pass the filter, no repeats."""
         seen = set()
         out = []
         for _, rows in self.sections():
-            for label, filename in rows:
-                if filename not in seen and self.matches(label, filename):
-                    seen.add(filename)
-                    out.append((label, filename))
+            for label, filename, choice in rows:
+                key = make_key(filename, choice)
+                if key not in seen and self.matches(label, filename, choice):
+                    seen.add(key)
+                    out.append((label, filename, choice))
+        return out
+
+    def row_label(self, filename, choice=None):
+        tool = self.by_file.get(filename, filename)
+        return tool if choice is None else "{}  ({})".format(choice, tool)
+
+    def pick_rows(self, keys):
+        """(label, filename, choice) rows for saved keys that still exist."""
+        out = []
+        for key in keys:
+            filename, choice = split_key(key)
+            if filename not in self.by_file:
+                continue
+            if choice is not None and choice not in self.entries_for(filename):
+                continue
+            out.append((self.row_label(filename, choice), filename, choice))
         return out
 
     def sections(self):
-        """Favourites and Recent first, then the categories."""
+        """Favourites and Recent first, then the categories. Rows are
+        (label, filename, choice); choice is None for a tool, or the drawer
+        entry for a favourited or recently used choice."""
         out = []
-        favs = [(self.by_file[f], f) for f in self.state["favourites"] if f in self.by_file]
+        favs = self.pick_rows(self.state["favourites"])
         if favs:
             out.append(("Favourites", favs))
-        recent = [(self.by_file[f], f) for f in self.state["recent"] if f in self.by_file]
+        recent = self.pick_rows(self.state["recent"])
         if recent:
             out.append(("Recent", recent))
-        out.extend(self.groups)
+        for title, members in self.groups:
+            out.append((title, [(label, filename, None) for label, filename in members]))
         return out
 
     def entries_for(self, filename):
@@ -386,7 +434,11 @@ class NPMenuForm(forms.Form):
             shown = 0
             for title, rows in self.sections():
                 block = []
-                for label, filename in rows:
+                for label, filename, choice in rows:
+                    if choice is not None:
+                        if self.matches(label, filename, choice):
+                            block.append((label, filename, choice, False, False, []))
+                        continue
                     has_drawer = filename in SUBMENU_TOOLS
                     entries = self.entries_for(filename) if has_drawer else []
                     hits = [e for e in entries if self.entry_matches(e)]
@@ -398,13 +450,13 @@ class NPMenuForm(forms.Form):
                     else:
                         expanded = filename in self.state["expanded"]
                         shown_entries = entries if expanded else []
-                    block.append((label, filename, has_drawer, expanded, shown_entries))
+                    block.append((label, filename, None, has_drawer, expanded, shown_entries))
                 if not block:
                     continue
                 column.Items.Add(forms.StackLayoutItem(self.heading(title), False))
-                for label, filename, has_drawer, expanded, shown_entries in block:
+                for label, filename, choice, has_drawer, expanded, shown_entries in block:
                     column.Items.Add(forms.StackLayoutItem(
-                        self.tool_row(label, filename, has_drawer, expanded), False))
+                        self.tool_row(label, filename, has_drawer, expanded, choice), False))
                     for entry in shown_entries:
                         column.Items.Add(forms.StackLayoutItem(self.entry_row(filename, entry), False))
                     shown += 1
@@ -414,19 +466,21 @@ class NPMenuForm(forms.Form):
             if not shown:
                 empty = forms.Label()
                 empty.Text = "No tools match."
-                empty.TextColor = drawing.Colors.Gray
+                style_label(empty, 11, color=drawing.Colors.Gray)
                 column.Items.Add(forms.StackLayoutItem(empty, False))
             self.scroll.Content = column
         except Exception:
             log(traceback.format_exc(), "ERROR")
 
-    def tool_row(self, label, filename, has_drawer, expanded):
+    def tool_row(self, label, filename, has_drawer, expanded, choice=None):
         row = forms.StackLayout()
         row.Orientation = forms.Orientation.Horizontal
         row.VerticalContentAlignment = forms.VerticalAlignment.Center
         row.Spacing = 4
-        row.Items.Add(forms.StackLayoutItem(self.star_button(filename), False))
-        if has_drawer:
+        row.Items.Add(forms.StackLayoutItem(self.star_button(make_key(filename, choice)), False))
+        if choice is not None:
+            row.Items.Add(forms.StackLayoutItem(self.tool_button(label, filename, choice), True))
+        elif has_drawer:
             button = forms.Button()
             button.Text = ("\u25be  " if expanded else "\u25b8  ") + label
             button.ToolTip = "Hide the choices" if expanded else "Show the choices for " + label
@@ -443,14 +497,10 @@ class NPMenuForm(forms.Form):
         row.VerticalContentAlignment = forms.VerticalAlignment.Center
         row.Spacing = 4
         indent = forms.Panel()
-        indent.Size = drawing.Size(32 + 4 + 16, -1)
+        indent.Size = drawing.Size(16, -1)
         row.Items.Add(forms.StackLayoutItem(indent, False))
-        button = forms.Button()
-        button.Text = entry
-        button.ToolTip = filename
-        button.Click += lambda sender, e, f=filename, c=entry: self.run_entry(f, c)
-        left_align(button)
-        row.Items.Add(forms.StackLayoutItem(button, True))
+        row.Items.Add(forms.StackLayoutItem(self.star_button(make_key(filename, entry)), False))
+        row.Items.Add(forms.StackLayoutItem(self.tool_button(entry, filename, entry), True))
         return row
 
     def toggle_expanded(self, filename):
@@ -462,37 +512,28 @@ class NPMenuForm(forms.Form):
         save_state(self.state)
         self.refresh_later()
 
-    def run_entry(self, filename, choice):
-        try:
-            write_menu_choice(filename, choice)
-        except Exception:
-            log(traceback.format_exc(), "ERROR")
-        self.run_tool(filename)
-
     @staticmethod
     def heading(text):
         label = forms.Label()
         label.Text = text
-        label.Font = drawing.Font(drawing.SystemFont.Bold, 12)
-        label.TextAlignment = forms.TextAlignment.Left
-        return label
+        return style_label(label, 12, bold=True)
 
-    def tool_button(self, label, filename):
+    def tool_button(self, label, filename, choice=None):
         button = forms.Button()
         button.Text = label
-        button.ToolTip = filename
-        button.Click += lambda sender, e, f=filename: self.run_tool(f)
+        button.ToolTip = filename if choice is None else "{}: {}".format(self.by_file.get(filename, filename), choice)
+        button.Click += lambda sender, e, f=filename, c=choice: self.run_tool(f, c)
         left_align(button)
         return button
 
-    def star_button(self, filename):
+    def star_button(self, key):
         star = forms.Button()
         star.Size = drawing.Size(32, -1)
         star.MinimumSize = drawing.Size(32, 0)
-        is_fav = filename in self.state["favourites"]
+        is_fav = key in self.state["favourites"]
         star.Text = "★" if is_fav else "☆"
         star.ToolTip = "Remove from favourites" if is_fav else "Add to favourites"
-        star.Click += lambda sender, e, f=filename: self.toggle_favourite(f)
+        star.Click += lambda sender, e, k=key: self.toggle_favourite(k)
         return star
 
     def refresh_later(self):
@@ -500,30 +541,36 @@ class NPMenuForm(forms.Form):
 
     # ----------------------------------------------------------- actions --
 
-    def toggle_favourite(self, filename):
+    def toggle_favourite(self, key):
         favs = self.state["favourites"]
-        if filename in favs:
-            favs.remove(filename)
+        if key in favs:
+            favs.remove(key)
         else:
-            favs.append(filename)
+            favs.append(key)
         save_state(self.state)
         self.refresh_later()
 
-    def remember_recent(self, filename):
-        recent = [f for f in self.state["recent"] if f != filename]
-        recent.insert(0, filename)
+    def remember_recent(self, key):
+        recent = [k for k in self.state["recent"] if k != key]
+        recent.insert(0, key)
         self.state["recent"] = recent[:MAX_RECENT]
         save_state(self.state)
 
-    def run_tool(self, filename):
-        """Start a tool. If another tool is waiting for input, cancel it first
-        (the "!" keystroke is Rhino's cancel) and launch once Rhino is idle;
-        a script started straight away would only nest inside the old one."""
-        self.remember_recent(filename)
+    def run_tool(self, filename, choice=None):
+        """Start a tool, with a drawer choice already made when given. If
+        another tool is waiting for input, cancel it first (the "!" keystroke
+        is Rhino's cancel) and launch once Rhino is idle; a script started
+        straight away would only nest inside the old one."""
+        self.remember_recent(make_key(filename, choice))
         script_path = os.path.join(os.path.dirname(os.path.abspath(np_launcher.__file__)), filename)
         if not os.path.isfile(script_path):
             Rhino.UI.Dialogs.ShowMessage("Script file not found:\n{}".format(script_path), "NP Menu")
             return
+        if choice is not None:
+            try:
+                write_menu_choice(filename, choice)
+            except Exception:
+                log(traceback.format_exc(), "ERROR")
         macro = '! _-RunPythonScript "{}"'.format(script_path)
         try:
             if Rhino.Commands.Command.InCommand():
@@ -568,7 +615,7 @@ class NPMenuForm(forms.Form):
                 rows = self.visible_tools()
                 if rows:
                     e.Handled = True
-                    self.run_tool(rows[0][1])
+                    self.run_tool(rows[0][1], rows[0][2])
             elif e.Key == forms.Keys.Escape and self.search.Text:
                 e.Handled = True
                 self.search.Text = ""
@@ -594,50 +641,277 @@ class NPMenuForm(forms.Form):
         try:
             np_launcher = importlib.reload(np_launcher)
         except Exception:
-            log(traceback.format_exc(), "ERROR")
+            try:  # a view from an earlier run holds a module object Rhino has since dropped
+                np_launcher = importlib.import_module("np_launcher")
+            except Exception:
+                log(traceback.format_exc(), "ERROR")
+        self.state = load_state()
         self.groups = build_groups()
         self.by_file = labels_by_file(self.groups)
         self.version_label.Text = version_text()
         self.refresh_later()
 
-    # ------------------------------------------------------------ window --
-
-    def restore_window(self):
-        window = self.state.get("window") or {}
-        try:
-            w, h = int(window.get("w", 0)), int(window.get("h", 0))
-            if w >= 300 and h >= 300:
-                self.ClientSize = drawing.Size(w, h)
-            if "x" in window and "y" in window:
-                self.Location = drawing.Point(int(window["x"]), int(window["y"]))
-        except Exception:
-            pass
-
-    def on_closed(self, sender, e):
-        try:
-            self.state["window"] = {
-                "x": self.Location.X, "y": self.Location.Y,
-                "w": self.ClientSize.Width, "h": self.ClientSize.Height,
-            }
-            save_state(self.state)
-        except Exception:
-            pass
-        if sc.sticky.get(STICKY_KEY) is self:
-            sc.sticky[STICKY_KEY] = None
-
-    def show(self):
-        self.restore_window()
-        self.Show()
+    def focus_search(self):
         try:
             self.search.Focus()
         except Exception:
             pass
 
 
+# ---------------------------------------------------------------- panel ---
+
+def panel_type():
+    """The .NET panel class Rhino registers. Emitted once per Rhino session:
+    a public subclass of Eto.Forms.Panel with a default constructor and the
+    Guid attribute Rhino insists on. Later runs find it in the app domain."""
+    for asm in System.AppDomain.CurrentDomain.GetAssemblies():
+        try:
+            if asm.GetName().Name == PANEL_ASSEMBLY:
+                found = asm.GetType(PANEL_TYPE_NAME)
+                if found is not None and str(found.GUID).lower() == PANEL_GUID.lower():
+                    return found
+        except Exception:
+            pass
+    import clr
+    import System.Reflection as R
+    import System.Reflection.Emit as E
+    builder = E.AssemblyBuilder.DefineDynamicAssembly(
+        R.AssemblyName(PANEL_ASSEMBLY), E.AssemblyBuilderAccess.Run)
+    module = builder.DefineDynamicModule(PANEL_ASSEMBLY)
+    type_builder = module.DefineType(
+        PANEL_TYPE_NAME, R.TypeAttributes.Public | R.TypeAttributes.Class, clr.GetClrType(forms.Panel))
+    type_builder.DefineDefaultConstructor(R.MethodAttributes.Public)
+    guid_attr = clr.GetClrType(System.Runtime.InteropServices.GuidAttribute)
+    ctor = guid_attr.GetConstructor(System.Array[System.Type]([clr.GetClrType(System.String)]))
+    type_builder.SetCustomAttribute(E.CustomAttributeBuilder(ctor, System.Array[System.Object]([PANEL_GUID])))
+    return type_builder.CreateType()
+
+
+def panel_icon():
+    """A small 'NP' badge for the panel tab."""
+    import System.Drawing as SD
+    import System.Drawing.Drawing2D as D2
+    bmp = SD.Bitmap(32, 32)
+    g = SD.Graphics.FromImage(bmp)
+    try:
+        g.SmoothingMode = D2.SmoothingMode.AntiAlias
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias
+        g.Clear(SD.Color.Transparent)
+        g.FillEllipse(SD.SolidBrush(SD.Color.FromArgb(255, 36, 36, 36)), 1, 1, 30, 30)
+        font = SD.Font("Helvetica", 13.0, SD.FontStyle.Bold, SD.GraphicsUnit.Pixel)
+        fmt = SD.StringFormat()
+        fmt.Alignment = SD.StringAlignment.Center
+        fmt.LineAlignment = SD.StringAlignment.Center
+        g.DrawString("NP", font, SD.Brushes.White, SD.RectangleF(0, 1, 32, 32), fmt)
+    finally:
+        g.Dispose()
+    return SD.Icon.FromHandle(bmp.GetHicon())
+
+
+def panel_guid():
+    return System.Guid(PANEL_GUID)
+
+
+def host_plugin():
+    return Rhino.PlugIns.PlugIn.Find(System.Guid(HOST_PLUGIN_ID))
+
+
+def panel_instances():
+    """Every live panel object Rhino holds for our id (one per document window on Mac)."""
+    out = []
+    getters = [lambda: Rhino.UI.Panels.GetPanel(panel_guid())]
+    try:
+        for doc in Rhino.RhinoDoc.OpenDocuments():
+            getters.append(lambda d=doc: Rhino.UI.Panels.GetPanel(panel_guid(), d))
+    except Exception:
+        pass
+    for get in getters:
+        try:
+            panel = get()
+        except Exception:
+            panel = None
+        if panel is not None and all(panel is not p and not panel.Equals(p) for p in out):
+            out.append(panel)
+    return out
+
+
+def ensure_content(panel, rebuild=False):
+    """Give a panel instance its menu, once (or again after an update)."""
+    views = sc.sticky.get(STICKY_VIEWS)
+    if not isinstance(views, list):
+        views = []
+        sc.sticky[STICKY_VIEWS] = views
+    try:
+        current = panel.Content
+    except Exception:
+        current = None
+    if current is not None and not rebuild:
+        try:  # a view from an earlier run of this file is a different class; duck-type it
+            current.reload_tools()
+        except Exception:
+            pass
+        return current
+    view = NPMenuView()
+    panel.Content = view
+    views[:] = [v for v in views if v is not current] + [view]
+    return view
+
+
+def on_panel_show(sender, e):
+    """Rhino shows or hides our panel: fill new instances, remember the choice."""
+    try:
+        if e.PanelId != panel_guid():
+            return
+        if e.Show:
+            for panel in panel_instances():
+                ensure_content(panel)
+            set_panel_open(True)
+        elif not sc.sticky.get(STICKY_CLOSING):
+            set_panel_open(False)
+    except Exception:
+        log(traceback.format_exc(), "ERROR")
+
+
+def on_rhino_closing(sender, e):
+    sc.sticky[STICKY_CLOSING] = True
+
+
+def set_panel_open(flag):
+    state = load_state()
+    if state.get("panel_open") != flag:
+        state["panel_open"] = flag
+        save_state(state)
+
+
+def hook_events():
+    """(Re)attach the panel show/hide and Rhino closing handlers, without doubling up."""
+    old = sc.sticky.get(STICKY_SHOW_HANDLER)
+    if old is not None:
+        try:
+            Rhino.UI.Panels.Show -= old
+        except Exception:
+            pass
+    Rhino.UI.Panels.Show += on_panel_show
+    sc.sticky[STICKY_SHOW_HANDLER] = on_panel_show
+    old = sc.sticky.get(STICKY_CLOSING_HANDLER)
+    if old is not None:
+        try:
+            Rhino.RhinoApp.Closing -= old
+        except Exception:
+            pass
+    Rhino.RhinoApp.Closing += on_rhino_closing
+    sc.sticky[STICKY_CLOSING_HANDLER] = on_rhino_closing
+
+
+def register_panel():
+    """Register the panel with Rhino for this session. Returns False only when
+    the host plug-in is missing; an already-registered panel counts as success."""
+    plugin = host_plugin()
+    if plugin is None:
+        Rhino.RhinoApp.WriteLine("NP Menu: the RhinoCode plug-in is not loaded; the panel needs Rhino 8.")
+        return False
+    hook_events()
+    try:
+        Rhino.UI.Panels.RegisterPanel(plugin, panel_type(), PANEL_TITLE, panel_icon(), Rhino.UI.PanelType.System)
+    except Exception as exc:
+        text = str(exc)
+        if "already" not in text.lower():
+            log("RegisterPanel: " + text, "ERROR")
+            Rhino.RhinoApp.WriteLine("NP Menu: could not register the panel: " + text)
+            return False
+    return True
+
+
+def move_on_screen(panel):
+    """A panel that floats for the first time can land off screen; pull it back."""
+    try:
+        form = panel.ParentWindow
+        if form is None or not isinstance(form, forms.Form):
+            return
+        bounds = form.Bounds
+        for screen in forms.Screen.Screens:
+            if screen.WorkingArea.Intersects(bounds):
+                return
+        main = Rhino.UI.RhinoEtoApp.MainWindow
+        area = main.Bounds if main is not None else forms.Screen.PrimaryScreen.WorkingArea
+        width = max(int(bounds.Width), 360)
+        height = max(int(bounds.Height), 600)
+        x = int(area.Right) - width - 40
+        y = int(area.Top) + 80
+        form.Location = drawing.Point(x, y)
+        form.Size = drawing.Size(width, height)
+        form.BringToFront()
+    except Exception:
+        log(traceback.format_exc(), "ERROR")
+
+
+def open_panel(rebuild=False):
+    """Open the panel, docked beside Layers the first time, and fill it."""
+    guid = panel_guid()
+    opened = False
+    try:
+        if not Rhino.UI.Panels.IsPanelVisible(guid):
+            opened = bool(Rhino.UI.Panels.OpenPanelAsSibling(guid, Rhino.UI.PanelIds.Layers, True))
+    except Exception:
+        opened = False
+    if not opened:
+        try:
+            Rhino.UI.Panels.OpenPanel(guid, True)
+        except Exception:
+            log(traceback.format_exc(), "ERROR")
+    view = None
+    for panel in panel_instances():
+        made = ensure_content(panel, rebuild=rebuild)
+        view = made or view
+        move_on_screen(panel)
+    set_panel_open(True)
+    if view is not None:
+        view.focus_search()
+    return view
+
+
 # --------------------------------------------------------------- startup ---
 
+def startup_script_path():
+    return os.path.join(THIS_DIR, STARTUP_FILENAME)
+
+
+def startup_command():
+    return '-_RunPythonScript "{}"'.format(os.path.abspath(startup_script_path()))
+
+
+def general_settings():
+    root = Rhino.PersistentSettings.FromPlugInId(Rhino.RhinoApp.CurrentRhinoId)
+    return root.GetChild("Options").GetChild("General")
+
+
+def ensure_startup_command():
+    """Add np_menu_startup.py to Rhino's startup commands (Options > General >
+    'Run these commands every time Rhino starts') so the panel survives a restart.
+    Replaces an older NP entry that points somewhere else. Returns True when changed."""
+    if not os.path.isfile(startup_script_path()):
+        return False
+    try:
+        settings = general_settings()
+        try:
+            current = settings.GetString("StartupCommands", "") or ""
+        except Exception:
+            current = ""
+        wanted = startup_command()
+        lines = [line for line in current.replace("\r", "").split("\n") if line.strip()]
+        if wanted in lines:
+            return False
+        lines = [line for line in lines if STARTUP_FILENAME not in line]
+        lines.append(wanted)
+        settings.SetString("StartupCommands", "\n".join(lines))
+        return True
+    except Exception:
+        log(traceback.format_exc(), "ERROR")
+        return False
+
+
 def ensure_menu_alias():
-    """Create the NPM alias if the user does not have one yet."""
+    """Create the NPP alias if the user does not have one yet."""
     if not np_deploy or not hasattr(np_deploy, "ensure_command_alias"):
         return
     try:
@@ -669,29 +943,29 @@ def update_check():
     return False
 
 
-def main():
-    global np_launcher
-    existing = sc.sticky.get(STICKY_KEY)
-    if existing is not None:
-        try:
-            if existing.Visible:
-                existing.reload_tools()
-                existing.BringToFront()
-                return
-        except Exception:
-            pass
-        sc.sticky[STICKY_KEY] = None
+def startup():
+    """Run by Rhino at startup (np_menu_startup.py): register the panel so the
+    sidebar knows it, and reopen it when it was open at the end of the last session."""
+    if not register_panel():
+        return
+    if load_state().get("panel_open", True):
+        open_panel()
 
+
+def main():
+    """Alias NPP: register (first time this session), check for updates, open."""
+    global np_launcher
     ensure_menu_alias()
-    if update_check():
+    ensure_startup_command()
+    updated = update_check()
+    if updated:
         try:
             np_launcher = importlib.reload(np_launcher)
         except Exception:
             pass
-
-    form = NPMenuForm()
-    sc.sticky[STICKY_KEY] = form
-    form.show()
+    if not register_panel():
+        return
+    open_panel(rebuild=updated)
 
 
 if __name__ == "__main__":

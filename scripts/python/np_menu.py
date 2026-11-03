@@ -503,6 +503,12 @@ class NPMenuView(forms.Panel):
         row.Items.Add(forms.StackLayoutItem(self.tool_button(entry, filename, entry), True))
         return row
 
+    def collapse(self, filename):
+        """Close a drawer (after one of its choices has been run)."""
+        if filename in self.state["expanded"]:
+            self.state["expanded"].remove(filename)
+            save_state(self.state)
+
     def toggle_expanded(self, filename):
         expanded = self.state["expanded"]
         if filename in expanded:
@@ -571,6 +577,7 @@ class NPMenuView(forms.Panel):
                 write_menu_choice(filename, choice)
             except Exception:
                 log(traceback.format_exc(), "ERROR")
+            self.collapse(filename)
         macro = '! _-RunPythonScript "{}"'.format(script_path)
         try:
             if Rhino.Commands.Command.InCommand():

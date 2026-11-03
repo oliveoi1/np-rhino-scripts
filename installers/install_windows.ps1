@@ -5,7 +5,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force | Out-Null
 $ErrorActionPreference = "Stop"
 
 $InstallRoot = Join-Path $env:USERPROFILE "Documents\NP Rhino Scripts"
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+# When run from a saved file these point at a developer checkout; when the
+# script is piped in from the web (irm ... | iex) there is no file path.
+$ScriptDir = if ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { $env:TEMP }
 $RepoRoot = Split-Path -Parent $ScriptDir
 
 # --- Configuration: edit before distributing ---

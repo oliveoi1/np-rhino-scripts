@@ -289,8 +289,26 @@ def style_label(label, size, bold=False, color=None):
     return label
 
 
+def no_focus(button):
+    """Keep keyboard focus out of the panel's buttons, so a click on a tool
+    leaves Rhino's command line ready for Enter (macOS; harmless elsewhere)."""
+    try:
+        button.ControlObject.RefusesFirstResponder = True
+    except Exception:
+        pass
+
+
+def focus_rhino():
+    """Hand keyboard focus back to Rhino's main window."""
+    try:
+        Rhino.RhinoApp.SetFocusToMainWindow()
+    except Exception:
+        pass
+
+
 def left_align(button):
     """Eto has no text alignment on Button; set it on the native control."""
+    no_focus(button)
     native = button.ControlObject
     try:  # macOS (AppKit NSButton)
         import AppKit
@@ -343,6 +361,8 @@ class NPMenuView(forms.Panel):
         update_btn.Text = "Force Update"
         update_btn.ToolTip = "Download the latest tools now"
         update_btn.Click += self.on_force_update
+        no_focus(guide_btn)
+        no_focus(update_btn)
 
         footer = forms.DynamicLayout()
         footer.Spacing = drawing.Size(6, 6)
@@ -540,6 +560,7 @@ class NPMenuView(forms.Panel):
         star.Text = "★" if is_fav else "☆"
         star.ToolTip = "Remove from favourites" if is_fav else "Add to favourites"
         star.Click += lambda sender, e, k=key: self.toggle_favourite(k)
+        no_focus(star)
         return star
 
     def refresh_later(self):
@@ -590,6 +611,7 @@ class NPMenuView(forms.Panel):
         self.refresh_later()
 
     def launch(self, macro, filename):
+        focus_rhino()
         if not Rhino.RhinoApp.RunScript(macro, False):
             Rhino.RhinoApp.WriteLine("NP Menu: could not run {}".format(filename))
 
@@ -619,10 +641,12 @@ class NPMenuView(forms.Panel):
     def on_search_key(self, sender, e):
         try:
             if e.Key == forms.Keys.Enter:
-                rows = self.visible_tools()
+                e.Handled = True
+                rows = self.visible_tools() if self.query_words() else []
                 if rows:
-                    e.Handled = True
                     self.run_tool(rows[0][1], rows[0][2])
+                else:
+                    focus_rhino()
             elif e.Key == forms.Keys.Escape and self.search.Text:
                 e.Handled = True
                 self.search.Text = ""
@@ -872,8 +896,6 @@ def open_panel(rebuild=False):
         view = made or view
         move_on_screen(panel)
     set_panel_open(True)
-    if view is not None:
-        view.focus_search()
     return view
 
 

@@ -1,6 +1,6 @@
 # NP Rhino Tools — Quick Reference
 
-Run tools from the **NP** launcher (`np_launcher.py`) or the **NPP** tool panel (`np_menu.py`, see below). Rhino 8 runs a script with IronPython 2 unless its first line is `#! python 3`; the panel, its startup script and the newer tools (17, 18, 19) carry that line, the older tools stay on IronPython. For full workflows and standards, use **Guide & Instructions** in the launcher (opens the [NP guide Google Doc](https://docs.google.com/document/d/1-wMRbW0fdt7HhVIuPh7oi6vFMNPt1Xmb1XPxvN63aVc/edit?tab=t.0)).
+Run tools from the **NP** launcher (`np_launcher.py`) or the **NPP** tool panel (`np_menu.py`, see below). Rhino 8 runs a script with IronPython 2 unless its first line is `#! python 3`; the panel, its startup script and the newer tools (17 to 21) carry that line, the older tools stay on IronPython. For full workflows and standards, use **Guide & Instructions** in the launcher (opens the [NP guide Google Doc](https://docs.google.com/document/d/1-wMRbW0fdt7HhVIuPh7oi6vFMNPt1Xmb1XPxvN63aVc/edit?tab=t.0)).
 
 **Dimensions** below are listed in inch fractions where scripts use inch-based constants. Your Rhino template should use inches (or equivalent scaling) unless noted (e.g. flipper holes in mm).
 
@@ -8,7 +8,7 @@ Run tools from the **NP** launcher (`np_launcher.py`) or the **NPP** tool panel 
 - **Guide & Instructions** — opens the Google Doc above.
 - **Force Update** — reinstalls/refreshes NP tools from the deploy manifest.
 
-**NP Menu (panel)** — alias **NPP**, or the first row of the NP list. A Rhino panel, like Layers or Properties: it docks as a tab in the sidebar, floats, collapses, and is listed in the sidebar's panel menu as **NP Tools**. It lists every tool by category (Joinery, Auto Inserts, Hardware, Blocks, Drawings + Annotation, Export, Templates) with short names and no numbers; the classic NP list keeps the numbered labels. It has a filter box (Enter runs the first match), a star to mark favourites, a Recent section, Guide and Force Update buttons, and the installed version in the footer. Tools whose first step is a list (Extrude Curves, Insert Block, Snapshot 2D Export, Display Modes, Annotation Styles) open as a drawer inside the panel: click the tool to show its choices, click a choice to run the tool with that choice already made, so its own list dialog is skipped. The filter box searches those choices too, so typing `screw` lists the four screws directly. Each choice has its own star, so a single material or block can be a favourite, and Recent records the exact choice you ran (shown as the choice with the tool in brackets) rather than the whole drawer. It stays open while tools run and cancels a tool that is still waiting for input when you start another. Favourites, recents, open drawers and whether the panel was open live in `_user_data/np_menu_state.json`. Both menus read the same `SCRIPT_CHOICES` table in `np_launcher.py`, so a tool added there appears in both; the panel shows it under Other until it is placed in the `CATEGORIES` table in `np_menu.py`. `NP` creates the `NPP` alias the first time it runs. How it works: Rhino only registers panel classes that carry a .NET Guid attribute, which a Python class cannot, so `np_menu.py` emits a tiny .NET subclass of Eto Panel at runtime (`panel_type()`), registers it through the RhinoCode plug-in that ships with Rhino 8, and builds the content in Python; Rhino's panel host restyles labels on load, so `style_label()` re-applies font and left alignment. Registration lasts one Rhino session, so the first `NPP` adds `np_menu_startup.py` to Rhino's startup commands (Options > General > Run these commands every time Rhino starts); that script re-registers the panel and reopens it when it was open at the end of the last session. Remove that line to stop the panel loading at startup.
+**NP Menu (panel)** — alias **NPP**, or the first row of the NP list. A Rhino panel, like Layers or Properties: it docks as a tab in the sidebar, floats, collapses, and is listed in the sidebar's panel menu as **NP Tools**. It lists every tool by category (Joinery, Auto Inserts, Hardware, Blocks, Drawings + Annotation, Export, Templates) with short names and no numbers; the classic NP list keeps the numbered labels. Category headings fold away and open again with a click (remembered between sessions; a search shows every match regardless). It has a filter box (Enter runs the first match), a star to mark favourites, a Recent section, Guide and Force Update buttons, and the installed version in the footer. Tools whose first step is a list (Extrude Curves, Insert Block, Snapshot 2D Export, Display Modes, Annotation Styles) open as a drawer inside the panel: click the tool to show its choices, click a choice to run the tool with that choice already made, so its own list dialog is skipped. The filter box searches those choices too, so typing `screw` lists the four screws directly. Each choice has its own star, so a single material or block can be a favourite, and Recent records the exact choice you ran (shown as the choice with the tool in brackets) rather than the whole drawer. It stays open while tools run and cancels a tool that is still waiting for input when you start another. Favourites, recents, open drawers and whether the panel was open live in `_user_data/np_menu_state.json`. Both menus read the same `SCRIPT_CHOICES` table in `np_launcher.py`, so a tool added there appears in both; the panel shows it under Other until it is placed in the `CATEGORIES` table in `np_menu.py`. `NP` creates the `NPP` alias the first time it runs. How it works: Rhino only registers panel classes that carry a .NET Guid attribute, which a Python class cannot, so `np_menu.py` emits a tiny .NET subclass of Eto Panel at runtime (`panel_type()`), registers it through the RhinoCode plug-in that ships with Rhino 8, and builds the content in Python; Rhino's panel host restyles labels on load, so `style_label()` re-applies font and left alignment. Registration lasts one Rhino session, so the first `NPP` adds `np_menu_startup.py` to Rhino's startup commands (Options > General > Run these commands every time Rhino starts); that script re-registers the panel and reopens it when it was open at the end of the last session. Remove that line to stop the panel loading at startup.
 
 ---
 
@@ -360,6 +360,51 @@ Run tools from the **NP** launcher (`np_launcher.py`) or the **NPP** tool panel 
 3. **Save one of my display modes to the team folder...** exports a mode as `.ini`; commit and push the file so everyone receives it.
 
 **Requires:** `.ini` files in `templates/display_modes/` (the folder ships with the install).
+
+---
+
+### 20 - Assembly Steps
+
+**What it does:** Makes cartoon-style assembly instruction images from the viewport: off-white parts with dark outlines on a white background, and the piece being placed in orange. The look comes from three team display modes in `templates/display_modes`, imported the first time they are needed: `NP Assembly` (off-white), `NP Assembly - Active` (orange) and `NP Assembly - Fittings` (flat dark grey, no edges, for screws and hardware). Every captured step is also kept in the file as a Rhino Snapshot, so the pictures can be redone when the assembly changes. Five choices, shown as a drawer in the NP Tools panel:
+
+- **Highlight selected piece** — shows the selected pieces in orange and puts the viewport in `NP Assembly`. Rhino ignores per-object display modes on block instances, so the tool adds a plain copy of each piece's solids on the layer `NP-Assembly - Highlight`, gives the copy the orange mode and hides the original. Blocks and production layers are untouched. A piece highlighted earlier is restored first. Also makes the layer `NP-Assembly - Arrows` for the symbols from 21.
+- **Clear highlight** — deletes the orange copies and shows the originals again. If an orange copy was moved while highlighted, the original is moved to match.
+- **Capture step** — saves the viewport in `NP Assembly` as a PNG at 2-3x the viewport size (scale is remembered) into an `Assembly Steps` folder next to the model, as `<model> step 01.png`, `step 02`... The step number defaults to the next free one. Edge weights are scaled with the capture (Rhino keeps them in pixels otherwise), so a 3x capture looks like the screen, only sharper. For the picture, visible block instances on the layers `NP-Fittings` and `08_fittings` are swapped for grey copies (same mechanism as Highlight) and put back right after, so screws read as hardware instead of off-white sticks; on screen they stay off-white. It also saves the snapshot `Assembly step NN` (positions, visibility, view, taken without the orange copies) and records which pieces were highlighted in the document user text (section `NP-Assembly`). Capturing the same number again replaces both the image and the snapshot.
+- **Restore step...** — pick a step: restores its snapshot and puts its highlight back, ready to adjust and capture again.
+- **Re-capture all steps** — after the assembly changes: restores every step snapshot in order, re-applies its highlight, and writes all the PNGs again. Pieces that no longer exist are reported.
+
+**Usage:**
+1. Position the parts for the step (move the piece out along the way it goes in).
+2. **Highlight selected piece** on the part being placed; add arrows and glue with **21 - Assembly Symbols**.
+3. **Capture step**, then **Clear highlight** or go straight to positioning the next step.
+4. Assembly changed later: fix the model, then **Re-capture all steps**. For one step, **Restore step...**, adjust, **Capture step** with the same number.
+
+**Requires:** The `.ini` files in `templates/display_modes`. Rhino 8.
+
+**Blocks / layers:** No block changes. Layers `NP-Assembly - Highlight` (orange and grey copies, temporary) and `NP-Assembly - Arrows`. Copies carry the user strings `np_assembly_source`, `np_assembly_anchor` and `np_assembly_role`; the file carries snapshots `Assembly step NN` and the user text section `NP-Assembly`.
+
+---
+
+### 21 - Assembly Symbols
+
+**What it does:** Arrows and glue beads for the assembly pictures from 20. Each symbol is a small solid with its own display mode, so it keeps its colour in the `NP Assembly` look and shades and outlines like the parts. Five choices, shown as a drawer in the NP Tools panel:
+
+- **Push / move arrow** — pick the tail and the tip; a flat block arrow is built between them, facing the camera of the active view. Width across the head is asked (remembered); slab thickness is **0.1**. Layer `NP-Assembly - Arrows`, mode `NP Assembly - Arrows` (green, dark outline).
+- **Rotate arrow (screw)** — pick a screw or other fitting block and the arrows are built around its axis, **3/4"** above the insertion point (remembered), or press Enter and pick a centre and a point along the axis. Asks the radius, Tighten (clockwise seen from the arrows' side, right-hand thread) or Loosen, and one or two arrows. Each arrow sweeps 150 degrees. Same layer and mode as the push arrow.
+- **Glue bead** — select curves, or press Enter and click the bead's points; a round-ended pipe of the asked diameter (default **3/16"**) is built along each. Layer `NP-Assembly - Glue`, mode `NP Assembly - Glue` (pale glue yellow, no edges). The source curve is left as it is.
+- **Tool call-out** — a flat icon facing the camera at a picked point, height asked (default **2**, remembered): `GlueBottle` (yellow bottle, grey cap, a drop), `Bit` (grey screwdriver bit with a cross-head profile circle), `Mallet` (grey barrel with white rubber faces), `Hammer` (grey claw head, white handle), `Tick` (green) and `Cross` (red). Grey parts use `NP Assembly - Fittings`, the tick `NP Assembly - Arrows`, the cross `NP Assembly - Cross`, white parts the base look with their outline. Each icon is a group on layer `NP-Assembly - Icons`.
+- **Moving blanket** — the protective blanket under the parts: click two corners, or press Enter to fit it under everything in view with an overhang (default **6**). A **1/4"** slab with rounded corners in `NP Assembly - Blanket` (dark blue) plus a diamond quilt of lines (spacing asked, default **4**, 0 for plain) in the layer colour. Layer `NP-Assembly - Blanket`, one group.
+
+**Usage:**
+1. Position and highlight the step with **20 - Assembly Steps**.
+2. Add the symbols; the new objects stay selected so they can be moved or scaled at once.
+3. Capture the step. Hide or delete the symbols before the next step; the step snapshot keeps their visibility.
+
+**Dimensions:** Defaults in model units: arrow width 1, thickness 0.1, rotate radius 0.6, band 0.2, offset 0.75, glue bead 0.1875. All asked values are remembered in `_user_data/assembly_symbols_defaults.json`.
+
+**Requires:** The `NP Assembly - *.ini` files in `templates/display_modes` (imported on first use). Rhino 8.
+
+**Blocks / layers:** No blocks. Layers `NP-Assembly - Arrows` and `NP-Assembly - Icons` (dark grey, the outline colour), `NP-Assembly - Glue` and `NP-Assembly - Blanket`. Objects are named `assembly arrow`, `assembly rotate arrow`, `glue bead`, `tool icon <name>` and `moving blanket`.
 
 ---
 

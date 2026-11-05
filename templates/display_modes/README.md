@@ -1,7 +1,18 @@
 # Team display modes
 
-Rhino display mode exports (`.ini`) shared across the team, for example
-`NP Assembly.ini` or `NP Render.ini`.
+Rhino display mode exports (`.ini`) shared across the team.
+
+- `NP Assembly.ini` — cartoon look for assembly instructions: off-white parts (RGB 245, 242, 235),
+  2 px dark grey edges (RGB 40, 40, 40), no isocurves, white background, flat ambient-occlusion
+  lighting without shadows. Built on the Shaded pipeline (a copy of Arctic) so it can also be
+  assigned to single objects.
+- `NP Assembly - Active.ini` — the same look in orange (RGB 232, 128, 58) for the piece being placed.
+- `NP Assembly - Fittings.ini` — flat dark grey (RGB 120, 120, 120) without edges, for screws and hardware.
+- `NP Assembly - Arrows.ini` — green (RGB 112, 190, 72) with dark edges, for the arrows from **21 - Assembly Symbols**.
+- `NP Assembly - Glue.ini` — pale glue yellow (RGB 245, 225, 130) without edges, for glue beads.
+- `NP Assembly - Cross.ini` — red (RGB 222, 80, 64) for the cross icon.
+- `NP Assembly - Blanket.ini` — dark blue (RGB 56, 66, 96) for the moving blanket.
+  **20 - Assembly Steps** and **21 - Assembly Symbols** import them as needed.
 
 - **Import** them in Rhino with **19 - Display Modes** (Templates section of the NP menu).
 - **Add or update** one from Rhino with the same tool: "Save one of my display modes to the team folder",

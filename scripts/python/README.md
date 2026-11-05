@@ -45,6 +45,8 @@ Matches `SCRIPT_CHOICES` in `np_launcher.py`:
 - `17 explode_fittings.py`
 - `18 annotation_styles.py`
 - `19 display_modes.py`
+- `20 assembly_steps.py`
+- `21 assembly_symbols.py`
 - `np_menu.py` (NP Tools panel, alias NPP)
 - `np_menu_startup.py` (re-registers the panel at Rhino startup; NPP adds it to the startup commands)
 

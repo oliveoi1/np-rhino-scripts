@@ -86,6 +86,8 @@ SUBMENU_TOOLS = [
     "16 snapshot_2d_export.py",
     "19 display_modes.py",
     "18 annotation_styles.py",
+    "20 assembly_steps.py",
+    "21 assembly_symbols.py",
 ]
 
 # Category -> (menu label, script filename), in display order. The window uses
@@ -131,6 +133,8 @@ CATEGORIES = [
         ("Bounding Dimensions", "13 bounding_dimensions.py"),
         ("Numbered Dots", "14 numbered_dots.py"),
         ("Plan View with Block names", "09 plan view.py"),
+        ("Assembly Steps", "20 assembly_steps.py"),
+        ("Assembly Symbols", "21 assembly_symbols.py"),
     ]),
     ("Export", [
         ("Snapshot 2D Export", "16 snapshot_2d_export.py"),
@@ -151,7 +155,7 @@ def state_path():
 
 
 def load_state():
-    state = {"favourites": [], "recent": [], "expanded": [], "panel_open": True}
+    state = {"favourites": [], "recent": [], "expanded": [], "collapsed": [], "panel_open": True}
     path = state_path()
     if os.path.isfile(path):
         try:
@@ -161,6 +165,7 @@ def load_state():
                 state["favourites"] = [f for f in saved.get("favourites", []) if isinstance(f, str)]
                 state["recent"] = [f for f in saved.get("recent", []) if isinstance(f, str)]
                 state["expanded"] = [f for f in saved.get("expanded", []) if isinstance(f, str)]
+                state["collapsed"] = [f for f in saved.get("collapsed", []) if isinstance(f, str)]
                 state["panel_open"] = bool(saved.get("panel_open", True))
         except Exception:
             pass
@@ -452,7 +457,9 @@ class NPMenuView(forms.Panel):
             column.Spacing = 3
             column.Padding = drawing.Padding(0, 0, 8, 0)
             shown = 0
+            searching = bool(self.query_words())
             for title, rows in self.sections():
+                folded = (not searching) and title in self.state["collapsed"]
                 block = []
                 for label, filename, choice in rows:
                     if choice is not None:
@@ -473,7 +480,10 @@ class NPMenuView(forms.Panel):
                     block.append((label, filename, None, has_drawer, expanded, shown_entries))
                 if not block:
                     continue
-                column.Items.Add(forms.StackLayoutItem(self.heading(title), False))
+                column.Items.Add(forms.StackLayoutItem(self.heading(title, folded), False))
+                if folded:
+                    shown += len(block)
+                    block = []
                 for label, filename, choice, has_drawer, expanded, shown_entries in block:
                     column.Items.Add(forms.StackLayoutItem(
                         self.tool_row(label, filename, has_drawer, expanded, choice), False))
@@ -538,11 +548,28 @@ class NPMenuView(forms.Panel):
         save_state(self.state)
         self.refresh_later()
 
-    @staticmethod
-    def heading(text):
-        label = forms.Label()
-        label.Text = text
-        return style_label(label, 12, bold=True)
+    def heading(self, text, folded=False):
+        """Category title; clicking it folds the category away or opens it again.
+        A search shows every match whatever is folded."""
+        button = forms.Button()
+        button.Text = ("\u25b8  " if folded else "\u25be  ") + text
+        button.ToolTip = "Show " + text if folded else "Fold " + text + " away"
+        try:
+            button.Font = drawing.Fonts.Sans(12, drawing.FontStyle.Bold)
+        except Exception:
+            pass
+        button.Click += lambda sender, e, t=text: self.toggle_collapsed(t)
+        left_align(button)
+        return button
+
+    def toggle_collapsed(self, title):
+        collapsed = self.state["collapsed"]
+        if title in collapsed:
+            collapsed.remove(title)
+        else:
+            collapsed.append(title)
+        save_state(self.state)
+        self.refresh_later()
 
     def tool_button(self, label, filename, choice=None):
         button = forms.Button()

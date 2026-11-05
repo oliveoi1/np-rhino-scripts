@@ -63,6 +63,8 @@ SCRIPT_CHOICES = [
     ("17 - Explode Fittings", "17 explode_fittings.py"),
     ("18 - Annotation Styles", "18 annotation_styles.py"),
     ("19 - Display Modes", "19 display_modes.py"),
+    ("20 - Assembly Steps", "20 assembly_steps.py"),
+    ("21 - Assembly Symbols", "21 assembly_symbols.py"),
 ]
 
 GUIDE_LABEL = "Guide & Instructions"

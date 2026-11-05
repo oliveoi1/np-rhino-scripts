@@ -76,6 +76,8 @@ STICKY_VIEWS = "np_menu_views"            # live NPMenuView instances, one per p
 STICKY_SHOW_HANDLER = "np_menu_show_handler"
 STICKY_CLOSING_HANDLER = "np_menu_closing_handler"
 STICKY_CLOSING = "np_menu_rhino_closing"
+HEADING_BACKGROUND = drawing.Color.FromArgb(78, 78, 82)   # category title bars
+HEADING_HEIGHT = 24
 
 # Tools whose first step is a list: the window shows that list as a drawer under
 # the tool. Each script exposes menu_items() and reads the chosen entry from
@@ -549,15 +551,27 @@ class NPMenuView(forms.Panel):
         self.refresh_later()
 
     def heading(self, text, folded=False):
-        """Category title; clicking it folds the category away or opens it again.
-        A search shows every match whatever is folded."""
+        """Category title: a button drawn as a dark bar with white bold text, so
+        it reads as a title and still takes clicks inside Rhino's panel host
+        (plain labels and panels get no mouse events there on macOS). Clicking
+        folds the category away or opens it again; a search shows every match
+        whatever is folded. The host restyles controls when they load, so the
+        look is applied again on LoadComplete."""
         button = forms.Button()
         button.Text = ("\u25b8  " if folded else "\u25be  ") + text
         button.ToolTip = "Show " + text if folded else "Fold " + text + " away"
-        try:
-            button.Font = drawing.Fonts.Sans(12, drawing.FontStyle.Bold)
-        except Exception:
-            pass
+        button.Size = drawing.Size(-1, HEADING_HEIGHT)
+
+        def restyle(sender=None, e=None):
+            try:
+                button.Font = drawing.Font(drawing.SystemFont.Bold, 12)
+                button.TextColor = drawing.Colors.White
+                button.BackgroundColor = HEADING_BACKGROUND
+            except Exception:
+                pass
+
+        restyle()
+        button.LoadComplete += restyle
         button.Click += lambda sender, e, t=text: self.toggle_collapsed(t)
         left_align(button)
         return button

@@ -52,7 +52,7 @@ for the pictures.
    snapshot `Assembly step 01` (positions, visibility and view) together with a
    note of which pieces were orange. Save the model so the snapshots are kept.
 6. **Clear.** **Assembly Steps → Clear highlight** puts the original piece back.
-   If you moved the orange piece while it was highlighted, the original follows it.
+   If you moved or rotated the orange piece while it was highlighted (flipping a part upside down, say), the original follows it.
 
 ## When the assembly changes
 

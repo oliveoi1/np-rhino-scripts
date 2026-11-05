@@ -59,6 +59,7 @@ CAPTURE_FOLDER = "Assembly Steps"
 
 SOURCE_KEY = "np_assembly_source"            # user string: id of the hidden original
 ANCHOR_KEY = "np_assembly_anchor"            # user string: copy centre at highlight time
+FRAME_KEY = "np_assembly_frame"              # user string: three vertex indices + positions at highlight time
 ROLE_KEY = "np_assembly_role"                # user string: "highlight" or "fitting"
 ROLE_HIGHLIGHT = "highlight"
 ROLE_FITTING = "fitting"
@@ -236,6 +237,80 @@ def centre_of(objs):
     return box.Center if box.IsValid else None
 
 
+def frame_candidates(geometry):
+    """Points that move rigidly with `geometry`, in an order that survives transforms."""
+    if isinstance(geometry, Rhino.Geometry.Brep):
+        return [v.Location for v in geometry.Vertices]
+    if isinstance(geometry, Rhino.Geometry.Extrusion):
+        brep = geometry.ToBrep(False)
+        return [v.Location for v in brep.Vertices] if brep is not None else []
+    if isinstance(geometry, Rhino.Geometry.Mesh):
+        return [Rhino.Geometry.Point3d(v) for v in geometry.Vertices]
+    return []
+
+
+def pick_frame(points):
+    """Indices of three well-spread, non-collinear points, or None."""
+    if len(points) < 3:
+        return None
+    tol = max(sc.doc.ModelAbsoluteTolerance, 1e-6)
+    first = 0
+    second = max(range(len(points)), key=lambda k: points[k].DistanceTo(points[first]))
+    if points[second].DistanceTo(points[first]) < tol:
+        return None
+    line = Rhino.Geometry.Line(points[first], points[second])
+    third = max(range(len(points)), key=lambda k: line.DistanceTo(points[k], True))
+    if line.DistanceTo(points[third], True) < tol:
+        return None
+    return first, second, third
+
+
+def frame_text(geometry):
+    """Encodes three reference points of `geometry` so the move + rotation the
+    copy gets later can be rebuilt: "i,j,k;x,y,z;x,y,z;x,y,z"."""
+    points = frame_candidates(geometry)
+    picked = pick_frame(points)
+    if picked is None:
+        return None
+    parts = [",".join(str(i) for i in picked)]
+    for i in picked:
+        parts.append("{!r},{!r},{!r}".format(points[i].X, points[i].Y, points[i].Z))
+    return ";".join(parts)
+
+
+def copy_transform(copy):
+    """The rigid transform `copy` has had since it was highlighted, or None."""
+    text = copy.Attributes.GetUserString(FRAME_KEY)
+    if not text:
+        return None
+    try:
+        parts = text.split(";")
+        picked = [int(v) for v in parts[0].split(",")]
+        then = [Rhino.Geometry.Point3d(*[float(v) for v in part.split(",")]) for part in parts[1:4]]
+    except Exception:
+        return None
+    points = frame_candidates(copy.Geometry)
+    if len(picked) != 3 or len(then) != 3 or any(i >= len(points) for i in picked):
+        return None
+    now = [points[i] for i in picked]
+    before = Rhino.Geometry.Plane(then[0], then[1], then[2])
+    after = Rhino.Geometry.Plane(now[0], now[1], now[2])
+    if not before.IsValid or not after.IsValid:
+        return None
+    return Rhino.Geometry.Transform.PlaneToPlane(before, after)
+
+
+def nearly_identity(xform):
+    tol = sc.doc.ModelAbsoluteTolerance
+    for row in range(3):
+        for col in range(4):
+            expected = 1.0 if row == col else 0.0
+            limit = tol if col == 3 else 1e-9
+            if abs(xform[row, col] - expected) > limit:
+                return False
+    return True
+
+
 def add_highlight(obj, active, layer_index, role=ROLE_HIGHLIGHT):
     """Adds copies of `obj`'s solids in the display mode `active` and hides `obj`.
     Returns the copy count."""
@@ -248,6 +323,9 @@ def add_highlight(obj, active, layer_index, role=ROLE_HIGHLIGHT):
         attrs.LayerIndex = layer_index
         attrs.SetUserString(SOURCE_KEY, str(obj.Id))
         attrs.SetUserString(ROLE_KEY, role)
+        frame = frame_text(geometry)
+        if frame:
+            attrs.SetUserString(FRAME_KEY, frame)
         new_id = sc.doc.Objects.Add(geometry, attrs)
         if new_id != System.Guid.Empty:
             added.append(new_id)
@@ -263,29 +341,41 @@ def add_highlight(obj, active, layer_index, role=ROLE_HIGHLIGHT):
     return len(added)
 
 
-def restore_highlight(source_id_text, copies):
-    """Deletes the copies of one original and shows it again, moved if the copies were."""
-    try:
-        source_id = System.Guid(source_id_text)
-    except Exception:
-        source_id = System.Guid.Empty
-    delta = None
+def copies_transform(copies):
+    """The move + rotation the copies of one original have had: rebuilt from the
+    vertex frame of the first copy that has one, else from the centre shift
+    (older highlights), else None."""
+    for copy in copies:
+        xform = copy_transform(copy)
+        if xform is not None:
+            return xform
     anchor_text = copies[0].Attributes.GetUserString(ANCHOR_KEY)
     now = centre_of(copies)
     if anchor_text and now is not None:
         try:
             x, y, z = [float(v) for v in anchor_text.split(",")]
-            delta = now - Rhino.Geometry.Point3d(x, y, z)
+            return Rhino.Geometry.Transform.Translation(now - Rhino.Geometry.Point3d(x, y, z))
         except Exception:
-            delta = None
+            return None
+    return None
+
+
+def restore_highlight(source_id_text, copies):
+    """Deletes the copies of one original and shows it again, moved and rotated
+    the way the copies were."""
+    try:
+        source_id = System.Guid(source_id_text)
+    except Exception:
+        source_id = System.Guid.Empty
+    xform = copies_transform(copies)
     for copy in copies:
         sc.doc.Objects.Delete(copy.Id, True)
     original = sc.doc.Objects.FindId(source_id) if source_id != System.Guid.Empty else None
     if original is None:
         return False
     sc.doc.Objects.Show(source_id, True)
-    if delta is not None and delta.Length > sc.doc.ModelAbsoluteTolerance:
-        sc.doc.Objects.Transform(source_id, Rhino.Geometry.Transform.Translation(delta), True)
+    if xform is not None and not nearly_identity(xform):
+        sc.doc.Objects.Transform(source_id, xform, True)
     return True
 
 

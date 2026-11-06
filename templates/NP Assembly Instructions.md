@@ -43,16 +43,38 @@ for the pictures.
    - **Moving blanket**: for the "clean surface" step. Press Enter to fit it under
      everything in view, or click two corners. Dark blue with a quilt pattern.
    Put step numbers in with `TextDot` or the annotation styles from
-   **18 - Annotation Styles**. Hide or delete the symbols before the next step; the
-   step snapshot remembers what was visible.
+   **18 - Annotation Styles**. The symbols can stay where they are: Capture notes
+   which symbols were visible for the step, and Restore step shows only those and
+   hides the rest. (A snapshot alone would not do this, since it knows nothing
+   about symbols made after it was saved.)
 5. **Capture.** **Assembly Steps → Capture step**. Accept the step number (it offers
    the next free one) and the scale (3 = three times the viewport, crisp at print
    size). The PNG lands in an `Assembly Steps` folder next to the model, named
    `<model> step 01.png` and so on. The step is also saved in the file as the
    snapshot `Assembly step 01` (positions, visibility and view) together with a
-   note of which pieces were orange. Save the model so the snapshots are kept.
+   note of which pieces were orange and which symbols were showing. Save the model
+   so the snapshots are kept.
 6. **Clear.** **Assembly Steps → Clear highlight** puts the original piece back.
    If you moved or rotated the orange piece while it was highlighted (flipping a part upside down, say), the original follows it.
+
+## Steps side by side instead
+
+If you would rather see every step at once, lay them out in a row:
+
+1. Build and capture step 1 as above.
+2. Select the whole stage (or just press Enter for everything visible) and run
+   **Assembly Steps → Copy stage sideways**. Give a distance (it suggests one a
+   little wider than the stage; `Direction` picks Left or Right, `Symbols` chooses
+   whether the arrows and glue come along, normally they stay). The copy lands
+   beside the original and the camera moves the same distance, so the picture
+   looks identical but you are now looking at the copy, which is selected.
+3. The copy is clean: the orange piece comes across as the real part, in the pose
+   you left it. The stage you left behind keeps its orange piece as a plain orange
+   object, so the row reads as a storyboard.
+4. Highlight the next piece in the copy, add symbols, **Capture step** with the next
+   number, then **Copy stage sideways** again. Capture saves the camera with each
+   step, so Restore step and Re-capture all still work; nothing needs hiding,
+   because the other stages are out of frame.
 
 ## When the assembly changes
 
@@ -63,7 +85,9 @@ for the pictures.
   or change the highlight, then **Capture step** with the same number. That
   replaces the image and the snapshot.
 - The Snapshots panel shows the same `Assembly step` entries; restoring one there
-  gives you the positions but not the orange piece, so prefer **Restore step...**.
+  gives you the positions but not the orange piece or the right symbols, so prefer
+  **Restore step...**. After a restore, **Show all symbols** brings every hidden
+  symbol back if you want them all on screen again.
 
 ## Good to know
 

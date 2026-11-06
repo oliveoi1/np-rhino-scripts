@@ -34,6 +34,7 @@ Both modes are imported from the team folder the first time they are needed.
 """
 
 import json
+import math
 import os
 import re
 
@@ -55,6 +56,7 @@ ORANGE = (232, 128, 58)                      # same orange as the Active mode
 EDGE_GREY = (40, 40, 40)                     # edge colour of both modes
 HIGHLIGHT_LAYER = "NP-Assembly - Highlight"  # the orange copies; grey so their edges match
 ARROW_LAYER = "NP-Assembly - Arrows"         # symbols from 21 - Assembly Symbols; grey = outline colour
+SYMBOL_LAYER_PREFIX = "NP-Assembly - "       # every layer of 21's symbols (Arrows, Glue, Icons, Blanket)
 CAPTURE_FOLDER = "Assembly Steps"
 
 SOURCE_KEY = "np_assembly_source"            # user string: id of the hidden original
@@ -67,15 +69,18 @@ ROLE_FITTING = "fitting"
 STEP_SNAPSHOT = "Assembly step {:02d}"       # snapshot saved per captured step
 STEP_PATTERN = re.compile(r"^Assembly step (\d+)$", re.IGNORECASE)
 DOC_SECTION = "NP-Assembly"                  # document user text: step -> highlighted ids
+SYMBOLS_SUFFIX = " symbols"                  # "<step name> symbols" -> ids of the symbols visible at capture
 
 HIGHLIGHT_LABEL = "Highlight selected piece"
 CLEAR_LABEL = "Clear highlight"
 CAPTURE_LABEL = "Capture step"
 RESTORE_LABEL = "Restore step..."
 RECAPTURE_LABEL = "Re-capture all steps"
+COPY_STAGE_LABEL = "Copy stage sideways"
+SHOW_SYMBOLS_LABEL = "Show all symbols"
 
 DEFAULTS_FILENAME = "assembly_steps_defaults.json"
-FALLBACK = {"scale": 3}
+FALLBACK = {"scale": 3, "stage_distance": 0.0, "stage_direction": "Right", "stage_symbols": "Leave"}
 
 SKIP_TYPES = (Rhino.DocObjects.ObjectType.Curve, Rhino.DocObjects.ObjectType.Point,
               Rhino.DocObjects.ObjectType.PointSet, Rhino.DocObjects.ObjectType.Annotation,
@@ -110,7 +115,8 @@ def take_menu_choice(valid_choices):
 
 def menu_items():
     """Choices offered by the list dialog and by the NP Menu drawer."""
-    return [HIGHLIGHT_LABEL, CLEAR_LABEL, CAPTURE_LABEL, RESTORE_LABEL, RECAPTURE_LABEL]
+    return [HIGHLIGHT_LABEL, CLEAR_LABEL, CAPTURE_LABEL, RESTORE_LABEL, RECAPTURE_LABEL,
+            COPY_STAGE_LABEL, SHOW_SYMBOLS_LABEL]
 
 
 # --- defaults -----------------------------------------------------------------
@@ -124,19 +130,26 @@ def load_defaults():
     try:
         with open(defaults_path(), "r") as handle:
             saved = json.load(handle)
-        data["scale"] = int(saved.get("scale", data["scale"]))
+        for key in FALLBACK:
+            if key in saved:
+                data[key] = saved[key]
+        data["scale"] = int(data["scale"])
+        data["stage_distance"] = float(data["stage_distance"])
     except Exception:
         pass
     return data
 
 
 def save_defaults(data):
+    """Merges `data` into the remembered defaults."""
+    merged = load_defaults()
+    merged.update(data)
     folder = os.path.dirname(defaults_path())
     try:
         if not os.path.isdir(folder):
             os.makedirs(folder)
         with open(defaults_path(), "w") as handle:
-            json.dump(data, handle)
+            json.dump(merged, handle)
     except Exception:
         pass
 
@@ -418,6 +431,55 @@ def clear_all(role=None):
     return len(groups)
 
 
+# --- symbols (the objects 21 - Assembly Symbols makes) --------------------------
+
+def is_symbol_layer(layer_index):
+    layer = sc.doc.Layers.FindIndex(layer_index)
+    if layer is None:
+        return False
+    return layer.Name.startswith(SYMBOL_LAYER_PREFIX) and layer.Name != HIGHLIGHT_LAYER
+
+
+def symbol_objects():
+    """Every object on a symbol layer, hidden ones included."""
+    settings = Rhino.DocObjects.ObjectEnumeratorSettings()
+    settings.HiddenObjects = True
+    settings.IncludeLights = False
+    settings.IncludeGrips = False
+    return [obj for obj in sc.doc.Objects.GetObjectList(settings)
+            if is_symbol_layer(obj.Attributes.LayerIndex)]
+
+
+def visible_symbol_ids():
+    return [obj.Id for obj in symbol_objects() if obj.Visible]
+
+
+def set_symbol_visibility(visible_ids):
+    """Shows the symbol objects in `visible_ids` and hides every other symbol
+    object, so a step shows only its own arrows, glue and icons. Returns (shown, hidden)."""
+    wanted = set(str(i) for i in visible_ids)
+    shown = hidden = 0
+    for obj in symbol_objects():
+        if str(obj.Id) in wanted:
+            if obj.IsHidden:
+                sc.doc.Objects.Show(obj.Id, True)
+                shown += 1
+        elif not obj.IsHidden:
+            sc.doc.Objects.Hide(obj.Id, True)
+            hidden += 1
+    return shown, hidden
+
+
+def show_symbols():
+    count = 0
+    for obj in symbol_objects():
+        if obj.IsHidden:
+            sc.doc.Objects.Show(obj.Id, True)
+            count += 1
+    sc.doc.Views.Redraw()
+    print("Showed {} hidden symbol object(s) on the NP-Assembly layers.".format(count))
+
+
 # --- fittings -----------------------------------------------------------------
 
 def fitting_instances():
@@ -505,14 +567,15 @@ def step_snapshots():
     return found
 
 
-def record_step(name, source_ids):
+def record_step(name, source_ids, symbol_ids=None):
     sc.doc.Strings.SetString(DOC_SECTION, name, ",".join(str(i) for i in source_ids))
+    if symbol_ids is not None:
+        sc.doc.Strings.SetString(DOC_SECTION, name + SYMBOLS_SUFFIX, ",".join(str(i) for i in symbol_ids))
 
 
-def recorded_sources(name):
-    text = sc.doc.Strings.GetValue(DOC_SECTION, name) or ""
+def parse_ids(text):
     ids = []
-    for part in text.split(","):
+    for part in (text or "").split(","):
         part = part.strip()
         if not part:
             continue
@@ -521,6 +584,19 @@ def recorded_sources(name):
         except Exception:
             pass
     return ids
+
+
+def recorded_sources(name):
+    return parse_ids(sc.doc.Strings.GetValue(DOC_SECTION, name))
+
+
+def recorded_symbols(name):
+    """Ids of the symbols visible when the step was captured, or None for a step
+    captured before symbols were tracked."""
+    text = sc.doc.Strings.GetValue(DOC_SECTION, name + SYMBOLS_SUFFIX)
+    if text is None:
+        return None
+    return parse_ids(text)
 
 
 def highlight():
@@ -695,10 +771,11 @@ def snapshot_step(step, active):
     where the copies are) and records the highlighted pieces, then puts the
     highlight back. Returns the source ids."""
     sources = [System.Guid(s) for s in current_sources()]
+    symbols = visible_symbol_ids()
     name = step_name(step)
     clear_all()
     saved = save_snapshot(name)
-    record_step(name, sources)
+    record_step(name, sources, symbols)
     if sources:
         apply_highlight(sources, active)
     return sources, saved
@@ -748,6 +825,9 @@ def bring_back_step(name, base, active):
     clear_all()
     if not restore_snapshot(name):
         return False, []
+    symbols = recorded_symbols(name)
+    if symbols is not None:
+        set_symbol_visibility(symbols)
     sources = recorded_sources(name)
     missing = []
     if sources:
@@ -782,7 +862,8 @@ def restore_step():
         rs.MessageBox("Could not restore snapshot '{}'.".format(choice), 0, TITLE)
         return
     note = " {} highlighted piece(s) no longer exist.".format(len(missing)) if missing else ""
-    print("Restored '{}' with its highlight.{} Capture step with the same number updates its image.".format(choice, note))
+    print("Restored '{}' with its highlight and its symbols (other steps' symbols are hidden; "
+          "Show all symbols brings them back).{} Capture step with the same number updates its image.".format(choice, note))
 
 
 def recapture_all():
@@ -804,6 +885,7 @@ def recapture_all():
         return
     save_defaults({"scale": int(scale)})
     view = sc.doc.Views.ActiveView
+    symbols_before = visible_symbol_ids()
     done = 0
     problems = []
     undo = sc.doc.BeginUndoRecord("Re-capture assembly steps")
@@ -823,6 +905,7 @@ def recapture_all():
             done += 1
             print("Re-captured step {}: {}".format(step, path))
         clear_all()
+        set_symbol_visibility(symbols_before)
     finally:
         if undo:
             sc.doc.EndUndoRecord(undo)
@@ -832,6 +915,197 @@ def recapture_all():
         summary += "\n\n" + "\n".join(problems)
     print(summary)
     rs.MessageBox(summary, 0, TITLE)
+
+
+# --- copy stage sideways (side-by-side steps) ----------------------------------
+
+def nice_number(value):
+    """Rounds up to a tidy figure: 1234 -> 1500, 87 -> 90."""
+    if value <= 0:
+        return 0.0
+    magnitude = 10 ** math.floor(math.log10(value))
+    return math.ceil(value / magnitude * 2) / 2.0 * magnitude
+
+
+def extent_along(objs, axis):
+    """Width of the objects' bounding boxes measured along the unit vector `axis`."""
+    low = high = None
+    for obj in objs:
+        box = obj.Geometry.GetBoundingBox(True)
+        if not box.IsValid:
+            continue
+        for corner in box.GetCorners():
+            d = Rhino.Geometry.Vector3d(corner.X, corner.Y, corner.Z) * axis
+            low = d if low is None or d < low else low
+            high = d if high is None or d > high else high
+    return (high - low) if low is not None else 0.0
+
+
+def ask_stage_distance(suggested, direction, symbols):
+    """Distance prompt with Direction and Symbols options. Returns (distance, direction, symbols) or None."""
+    directions = ["Right", "Left"]
+    symbol_choices = ["Leave", "Copy"]
+    while True:
+        getter = Rhino.Input.Custom.GetNumber()
+        getter.SetCommandPrompt("Distance to copy the stage sideways (the camera moves with it)")
+        getter.SetDefaultNumber(suggested)
+        getter.SetLowerLimit(0.0, True)
+        dir_option = getter.AddOptionList("Direction", directions, directions.index(direction))
+        sym_option = getter.AddOptionList("Symbols", symbol_choices, symbol_choices.index(symbols))
+        result = getter.Get()
+        if result == Rhino.Input.GetResult.Option:
+            option = getter.Option()
+            if option.Index == dir_option:
+                direction = directions[option.CurrentListOptionIndex]
+            elif option.Index == sym_option:
+                symbols = symbol_choices[option.CurrentListOptionIndex]
+            continue
+        if result == Rhino.Input.GetResult.Number:
+            return getter.Number(), direction, symbols
+        return None
+
+
+def copy_object(obj, xform):
+    """Adds a transformed copy of `obj` (shown even if `obj` is hidden). Returns its id."""
+    new_id = sc.doc.Objects.Transform(obj, xform, False)
+    if new_id != System.Guid.Empty and obj.IsHidden:
+        sc.doc.Objects.Show(new_id, True)
+    return new_id
+
+
+def regroup(new_ids):
+    """Gives the copies fresh groups mirroring the originals' groups."""
+    mapping = {}
+    for new_id in new_ids:
+        obj = sc.doc.Objects.FindId(new_id)
+        if obj is None:
+            continue
+        groups = list(obj.Attributes.GetGroupList() or [])
+        if not groups:
+            continue
+        attrs = obj.Attributes.Duplicate()
+        attrs.RemoveFromAllGroups()
+        for group in groups:
+            if group not in mapping:
+                mapping[group] = sc.doc.Groups.Add()
+            attrs.AddToGroup(mapping[group])
+        sc.doc.Objects.ModifyAttributes(obj, attrs, True)
+
+
+def freeze_highlight(source, copies):
+    """Bakes one highlight of the stage left behind: its orange copies become plain
+    orange objects (no longer tracked) and the hidden original is removed, since
+    the new stage got a clean copy of it."""
+    for copy in copies:
+        attrs = copy.Attributes.Duplicate()
+        for key in (SOURCE_KEY, ANCHOR_KEY, FRAME_KEY, ROLE_KEY):
+            attrs.DeleteUserString(key)
+        sc.doc.Objects.ModifyAttributes(copy, attrs, True)
+    try:
+        source_id = System.Guid(source)
+    except Exception:
+        return
+    if sc.doc.Objects.FindId(source_id) is not None:
+        sc.doc.Objects.Show(source_id, True)   # Rhino will not delete a hidden object
+        sc.doc.Objects.Delete(source_id, True)
+
+
+def visible_object_ids():
+    return [obj.Id for obj in sc.doc.Objects if obj.Visible]
+
+
+def copy_stage_objects(objs, vector, symbols="Leave"):
+    """Copies `objs` by `vector`. Highlighted pieces come across as their real
+    parts in the pose their orange copies have, and are frozen where they were.
+    Symbols are left behind unless `symbols` is "Copy". Returns
+    (new ids, frozen highlight count, symbols left behind)."""
+    translation = Rhino.Geometry.Transform.Translation(vector)
+    all_copies = highlight_copies()
+    new_ids = []
+    frozen = []
+    handled = set()
+    left_symbols = 0
+    for obj in objs:
+        if is_symbol_layer(obj.Attributes.LayerIndex) and symbols == "Leave":
+            left_symbols += 1
+            continue
+        source = obj.Attributes.GetUserString(SOURCE_KEY)
+        if source and obj.Attributes.GetUserString(ROLE_KEY) == ROLE_HIGHLIGHT:
+            if source in handled:
+                continue
+            handled.add(source)
+            group = all_copies.get(source, [obj])
+            xform = copies_transform(group) or Rhino.Geometry.Transform.Identity
+            try:
+                original = sc.doc.Objects.FindId(System.Guid(source))
+            except Exception:
+                original = None
+            if original is not None:
+                new_id = copy_object(original, translation * xform)
+            else:
+                new_id = copy_object(obj, translation)
+            if new_id != System.Guid.Empty:
+                new_ids.append(new_id)
+            frozen.append((source, group))
+            continue
+        new_id = copy_object(obj, translation)
+        if new_id != System.Guid.Empty:
+            new_ids.append(new_id)
+    regroup(new_ids)
+    for source, group in frozen:
+        freeze_highlight(source, group)
+    return new_ids, len(frozen), left_symbols
+
+
+def copy_stage():
+    """Copies the selected stage sideways (along the view's horizontal) and moves the
+    camera the same way, so the picture looks the same but shows the copy. The copy
+    is clean: highlighted pieces come across as their real, un-highlighted parts
+    in the pose the orange copies had. The stage left behind is frozen as a picture."""
+    ids = rs.GetObjects("Select the stage to copy (Enter = everything visible)", preselect=True)
+    if ids is None:
+        ids = visible_object_ids()
+    if not ids:
+        print("Nothing to copy.")
+        return
+    objs = [sc.doc.Objects.FindId(i) for i in ids]
+    objs = [o for o in objs if o is not None]
+    view = sc.doc.Views.ActiveView
+    vp = view.ActiveViewport
+    axis = Rhino.Geometry.Vector3d(vp.CameraX)
+    axis.Unitize()
+    defaults = load_defaults()
+    suggested = defaults["stage_distance"] or nice_number(extent_along(objs, axis) * 1.25)
+    answer = ask_stage_distance(suggested, defaults["stage_direction"], defaults["stage_symbols"])
+    if answer is None:
+        return
+    distance, direction, symbols = answer
+    save_defaults({"stage_distance": float(distance), "stage_direction": direction, "stage_symbols": symbols})
+    vector = axis * distance
+    if direction == "Left":
+        vector.Reverse()
+
+    rs.EnableRedraw(False)
+    undo = sc.doc.BeginUndoRecord("Copy assembly stage sideways")
+    try:
+        new_ids, frozen, left_symbols = copy_stage_objects(objs, vector, symbols)
+        vp.SetCameraLocations(vp.CameraTarget + vector, vp.CameraLocation + vector)
+    finally:
+        if undo:
+            sc.doc.EndUndoRecord(undo)
+        rs.EnableRedraw(True)
+    rs.UnselectAllObjects()
+    for new_id in new_ids:
+        sc.doc.Objects.Select(new_id, True)
+    view.Redraw()
+    sc.doc.Views.Redraw()
+    note = ""
+    if frozen:
+        note += " {} highlighted piece(s) came across as clean parts; the stage left behind keeps them orange as plain objects.".format(frozen)
+    if left_symbols:
+        note += " {} symbol(s) stayed with the old stage.".format(left_symbols)
+    print("Copied {} object(s) {:g} {} and moved the camera with them; the copy is selected.{} "
+          "Highlight the next piece and Capture step as usual.".format(len(new_ids), distance, direction.lower(), note))
 
 
 def main():
@@ -851,6 +1125,10 @@ def main():
         restore_step()
     elif choice == RECAPTURE_LABEL:
         recapture_all()
+    elif choice == COPY_STAGE_LABEL:
+        copy_stage()
+    elif choice == SHOW_SYMBOLS_LABEL:
+        show_symbols()
 
 
 if __name__ == "__main__":

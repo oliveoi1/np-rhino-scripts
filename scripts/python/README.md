@@ -38,6 +38,7 @@ Matches `SCRIPT_CHOICES` in `np_launcher.py`:
 - `10 logo_cut.py`
 - `11 export_blocks_to_skp.py`
 - `11a export_blocks_to_3dm.py`
+- `11b export_blocks_to_step.py`
 - `12 zero_sku_insertion_z.py`
 - `13 bounding_dimensions.py`
 - `14 numbered_dots.py`

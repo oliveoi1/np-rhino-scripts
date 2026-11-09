@@ -56,6 +56,7 @@ SCRIPT_CHOICES = [
     ("10 - Logo Cut", "10 logo_cut.py"),
     ("11 - Export Blocks to SketchUp", "11 export_blocks_to_skp.py"),
     ("11a - Export Blocks to Rhino", "11a export_blocks_to_3dm.py"),
+    ("11b - Export Blocks to STEP", "11b export_blocks_to_step.py"),
     ("12 - Zero SKU Insertion Z", "12 zero_sku_insertion_z.py"),
     ("13 - Bounding Dimensions", "13 bounding_dimensions.py"),
     ("14 - Numbered Dots", "14 numbered_dots.py"),

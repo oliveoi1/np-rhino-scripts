@@ -142,6 +142,7 @@ CATEGORIES = [
         ("Snapshot 2D Export", "16 snapshot_2d_export.py"),
         ("Export Blocks to SketchUp", "11 export_blocks_to_skp.py"),
         ("Export Blocks to Rhino", "11a export_blocks_to_3dm.py"),
+        ("Export Blocks to STEP", "11b export_blocks_to_step.py"),
     ]),
     ("Templates", [
         ("Annotation Styles", "18 annotation_styles.py"),

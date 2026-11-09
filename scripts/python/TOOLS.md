@@ -524,6 +524,29 @@ Run tools from the **NP** launcher (`np_launcher.py`) or the **NPP** tool panel 
 
 ---
 
+### 11b - Export Blocks to STEP
+
+**What it does:** Exports each selected block to its own `.step` file named after the block, with the block insertion point at the origin. Made for outside consultants who rebuild NP products in other systems (CET, Revit): STEP carries exact solids rather than meshes, the model units and layer names, and Rhino writes the block and its nested blocks as an assembly with the real block names.
+
+**What goes into the file:** Only solids, surfaces and the nested blocks that contain them. Left out: construction markers (`hole_insert`, `caminsert`, `flipper_insert`, and any nested block on a construction, SKU insertion or setout layer, so `SKUInsertionPt` and `BlkInsertionPt` too), text, curves, points and meshes. STEP cannot hold text, and Rhino stops on a warning dialog for each file that has any; every SKU block has the "S" of its `SKUInsertionPt` marker, so an unfiltered batch would stop at every product. The filtering is done on temporary block definitions (`<name>__npstep__`) that are deleted straight after; the real blocks are never changed, and the suffix is taken out of the file so parts keep their names.
+
+Otherwise it works like 11a: one file per distinct block (repeated instances are skipped), markers selected by themselves are not exported, an existing file is replaced only after the new export has succeeded, and Esc stops the run. A block with no solids or surfaces in it is skipped and listed in the summary.
+
+**Usage:**
+1. Select **block instances** to export.
+2. Choose **output folder** in the file dialog.
+3. Read the summary: exported, repeated, skipped.
+
+**Schema:** AP214 Automotive Design, asked for by name on every export, because Rhino remembers the last schema used and AP203 would drop colours and layers. If a Rhino build does not offer the option, the export falls back to Rhino's own default.
+
+**Origin:** The block's own insertion point, as in 11 and 11a. Where a product's `SKUInsertionPt` marker sits somewhere else in the block, the file origin is still the block insertion point.
+
+**Requires:** Rhino STEP export.
+
+**Blocks / layers:** No lasting changes. Two block names that would give the same file name stop the run before anything is written.
+
+---
+
 ### 12 - Zero SKU Insertion Z
 
 **What it does:** Moves selected block instances vertically so nested `SKUInsertionPt` (or block insertion point) lands at **Z = 0**; X/Y unchanged.

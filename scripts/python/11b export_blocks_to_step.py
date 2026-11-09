@@ -11,9 +11,10 @@ cannot hold text (Rhino would stop on a warning dialog for every product, since
 each one carries the "S" of its SKU insertion marker), and setout geometry is
 noise to whoever receives the file. Only solids, surfaces and the nested blocks
 that contain them are written. The stripping happens on temporary block
-definitions; the real blocks are never touched. The export sits with the block
-insertion point at the origin. Existing output files are replaced only after a
-new export succeeds.
+definitions; the real blocks are never touched. The origin of each file is the
+product's SKU insertion marker (the nested block SKUInsertionPt) when it has
+one, else the block insertion point. Existing output files are replaced only
+after a new export succeeds.
 """
 
 import os
@@ -28,6 +29,10 @@ import scriptcontext as sc
 
 HELPER_BLOCKS = set(["hole_insert", "caminsert", "flipper_insert"])
 EXTENSION = ".step"
+SKU_INSERTION_BLOCK = "SKUInsertionPt"       # its position becomes the file origin
+ORIGIN_SKU = "sku"
+ORIGIN_SKU_MULTIPLE = "sku-multiple"
+ORIGIN_BLOCK = "block"
 # AP214 keeps colours and layer names; AP203 would drop them.
 STEP_SCHEMA = "AP214AutomotiveDesign"
 # Temporary cleaned block definitions are called "<block name>__npstep__"; the
@@ -252,11 +257,32 @@ def restore_names(path):
             handle.write(cleaned)
 
 
+def export_origin(instance):
+    """World point that should land on the origin of the file: where the product's
+    SKU insertion marker sits (first one directly inside the block), else the block
+    insertion point. Returns (point, ORIGIN_SKU | ORIGIN_SKU_MULTIPLE | ORIGIN_BLOCK)."""
+    markers = []
+    for obj in instance.InstanceDefinition.GetObjects():
+        if not isinstance(obj, Rhino.DocObjects.InstanceObject):
+            continue
+        child = obj.InstanceDefinition
+        if child is not None and (child.Name or "").lower() == SKU_INSERTION_BLOCK.lower():
+            point = Rhino.Geometry.Point3d(obj.InsertionPoint)
+            point.Transform(instance.InstanceXform)
+            markers.append(point)
+    if not markers:
+        return instance.InsertionPoint, ORIGIN_BLOCK
+    tolerance = sc.doc.ModelAbsoluteTolerance
+    distinct = any(m.DistanceTo(markers[0]) > tolerance for m in markers[1:])
+    return markers[0], (ORIGIN_SKU_MULTIPLE if distinct else ORIGIN_SKU)
+
+
 def export_selected_instance_to_step(inst_id, out_path):
     """
-    Add a cleaned copy of the block with its insertion point at the origin,
-    export it, remove it again. Returns True on success; raises NothingToExport
-    for a block with no solids or surfaces in it.
+    Add a cleaned copy of the block with its SKU insertion marker (or, without
+    one, its insertion point) at the origin, export it, remove it again. Returns
+    which origin was used (see export_origin) on success, False on failure;
+    raises NothingToExport for a block with no solids or surfaces in it.
     """
     instance = sc.doc.Objects.FindId(inst_id)
     if not isinstance(instance, Rhino.DocObjects.InstanceObject):
@@ -270,8 +296,9 @@ def export_selected_instance_to_step(inst_id, out_path):
         if clean_index is None:
             raise NothingToExport("no solids or surfaces")
 
+        origin_point, origin_kind = export_origin(instance)
         to_origin = Rhino.Geometry.Transform.Translation(
-            Rhino.Geometry.Point3d.Origin - instance.InsertionPoint)
+            Rhino.Geometry.Point3d.Origin - origin_point)
         copy_id = sc.doc.Objects.AddInstanceObject(
             clean_index, to_origin * instance.InstanceXform, instance.Attributes.Duplicate())
         if not copy_id or not rs.IsObject(copy_id):
@@ -291,7 +318,7 @@ def export_selected_instance_to_step(inst_id, out_path):
             raise RuntimeError("Export file is not a STEP file")
         restore_names(staged_path)
         replace_export(staged_path, out_path)
-        return True
+        return origin_kind
     finally:
         try:
             if copy_id and rs.IsObject(copy_id):
@@ -300,6 +327,37 @@ def export_selected_instance_to_step(inst_id, out_path):
         finally:
             if stage_dir:
                 shutil.rmtree(stage_dir, ignore_errors=True)
+
+
+def has_sku_marker(inst_id):
+    instance = sc.doc.Objects.FindId(inst_id)
+    if not isinstance(instance, Rhino.DocObjects.InstanceObject):
+        return False
+    return export_origin(instance)[1] != ORIGIN_BLOCK
+
+
+def choose_jobs(jobs):
+    """With products (blocks holding an SKU insertion marker) and other blocks
+    (loose parts, fittings) both in the selection, asks whether the others should
+    be exported too. Returns the jobs to run, or None when cancelled."""
+    products = [job for job in jobs if has_sku_marker(job[0])]
+    others = len(jobs) - len(products)
+    if not products or not others:
+        return jobs
+    answer = rs.MessageBox(
+        "{} of the {} selected blocks are products with an SKU insertion marker.\n"
+        "The other {} have none (loose parts, fittings); they would be exported "
+        "with their block insertion point as the origin.\n\n"
+        "Export those {} as well?\n\nYes = everything, No = only the {} products.".format(
+            len(products), len(jobs), others, others, len(products)),
+        3 | 32, "Export blocks to STEP")
+    if answer == 6:
+        return jobs
+    if answer == 7:
+        print("Exporting the {} products only; {} blocks without an SKU insertion marker left out.".format(
+            len(products), others))
+        return products
+    return None
 
 
 def run_export():
@@ -323,6 +381,10 @@ def run_export():
                       "hole_insert are skipped.\nSelect the finished product blocks.")
         return
 
+    jobs = choose_jobs(jobs)
+    if jobs is None:
+        return
+
     folder = rs.BrowseForFolder(
         message="Choose folder for STEP exports",
         title="Export blocks to STEP",
@@ -337,6 +399,8 @@ def run_export():
 
     exported = 0
     empty = []
+    no_marker = []
+    several_markers = []
     stopped = None
     remove_stale_temp_definitions()
 
@@ -347,11 +411,15 @@ def run_export():
             try:
                 check_cancelled()
                 print("Export {}/{}: {} (Esc to stop)".format(index, len(jobs), safe_name))
-                if export_selected_instance_to_step(inst_id, out_path):
-                    exported += 1
-                    print("Saved: {}".format(out_path))
-                else:
+                origin_kind = export_selected_instance_to_step(inst_id, out_path)
+                if not origin_kind:
                     raise RuntimeError("Could not prepare export copy")
+                exported += 1
+                if origin_kind == ORIGIN_BLOCK:
+                    no_marker.append(safe_name)
+                elif origin_kind == ORIGIN_SKU_MULTIPLE:
+                    several_markers.append(safe_name)
+                print("Saved: {}".format(out_path))
             except ExportCancelled:
                 stopped = "Cancelled by user."
                 break
@@ -367,10 +435,20 @@ def run_export():
     msg = ("Exported: {} of {} unique blocks\nRepeated instances skipped: {}\n"
            "Construction markers skipped: {}\nInvalid objects skipped: {}\nFolder:\n{}").format(
                exported, len(jobs), counts["duplicates"], counts["helpers"], counts["invalid"], folder)
+    def listed(names):
+        text = ", ".join(names[:12])
+        if len(names) > 12:
+            text += " and {} more".format(len(names) - 12)
+        return text
+
+    msg += "\n\nOrigin at the SKU insertion marker: {}".format(exported - len(no_marker))
+    if no_marker:
+        msg += "\nNo {} inside, block insertion point used: {}".format(SKU_INSERTION_BLOCK, listed(no_marker))
+    if several_markers:
+        msg += "\nSeveral {} in different places, first one used: {}".format(
+            SKU_INSERTION_BLOCK, listed(several_markers))
     if empty:
-        msg += "\n\nNo solids or surfaces, skipped: {}".format(", ".join(empty[:12]))
-        if len(empty) > 12:
-            msg += " and {} more".format(len(empty) - 12)
+        msg += "\n\nNo solids or surfaces, skipped: {}".format(listed(empty))
     if stopped:
         msg += "\n\n" + stopped
     rs.MessageBox(msg)

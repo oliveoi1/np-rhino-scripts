@@ -21,12 +21,20 @@ Rhino display mode exports (`.ini`) shared across the team.
 Importing a mode whose id already exists updates it in place, so re-importing after a
 change refreshes everyone's copy rather than creating duplicates.
 
-## File encoding
+## If a mode will not import
 
-The `.ini` files here are plain text **without a byte order mark**. Rhino for Mac exports
-display modes as UTF-8 with that mark and reads anything; Rhino for Windows can fail on it
-("Could not import display mode"), because the first line, the `[DisplayMode\<id>]` header,
-is then not recognised. "Save one of my display modes to the team folder" re-saves the export
-in the portable form, so do not export into this folder by hand from Rhino's Options. If a
-file still fails, tools 19, 20 and 21 try it again as plain text and as UTF-16 before giving up,
-and the error message then names the file, its first bytes and the Rhino version.
+Two things have gone wrong with these files, and the tools work around both:
+
+- **Encoding.** The `.ini` files here are plain text **without a byte order mark**. Rhino for Mac
+  exports display modes as UTF-8 with that mark and reads anything; a reader that takes the mark for
+  text no longer recognises the first line, the `[DisplayMode\<id>]` header. "Save one of my display
+  modes to the team folder" re-saves the export in the portable form, so do not export into this
+  folder by hand from Rhino's Options.
+- **Script engine.** In Rhino 8 for Windows before 8.13, importing a display mode from a Python 3
+  script silently did nothing (McNeel RH-83960). Updating Rhino cures it.
+
+Tools 19, 20 and 21 try an import four ways: as saved, in other encodings, through a small
+IronPython script, and with the script's undo record closed. If all fail, the message names the
+file, its first bytes and the Rhino version. **19 - Display Modes → Check display mode import
+(report)** tests each route on throwaway copies and writes the result to
+`_logs/display_mode_check.txt` and the clipboard; send that report along with the problem.

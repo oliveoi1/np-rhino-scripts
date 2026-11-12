@@ -148,11 +148,18 @@ def save_defaults(data):
 
 # --- display mode files ---------------------------------------------------------
 #
-# Rhino for Mac writes display mode .ini files as UTF-8 with a byte order mark and
-# reads any encoding. Rhino for Windows can trip over that mark: the first line,
-# the [DisplayMode\<id>] header, is then not recognised and the import returns
-# nothing. Team files are therefore kept as plain text without the mark, and a
-# failed import is tried again in the other encodings Rhino has used.
+# Team display modes travel as .ini files, and importing them has two known traps:
+#
+# * Encoding. Rhino for Mac exports UTF-8 with a byte order mark and reads anything.
+#   A reader that takes the mark for text no longer recognises the first line, the
+#   [DisplayMode\<id>] header. Team files are kept as plain text without the mark.
+# * Script engine. In Rhino 8 for Windows before 8.13, ImportFromFile did nothing
+#   when called from the Python 3 engine (McNeel RH-83960: the engine's open undo
+#   record got in the way); from IronPython it worked.
+#
+# import_mode_file therefore tries the file as saved, re-saved in other encodings,
+# through a tiny IronPython script, and with the script's undo record closed, in
+# that order, and says which one worked.
 
 def read_mode_file(path):
     """Text of a display mode .ini, whichever encoding it was saved in."""
@@ -184,49 +191,112 @@ def portable_mode_bytes(text):
     return mode_file_bytes(text, "plain text")
 
 
-def import_mode_id(path):
+def mode_file_id(path):
+    """The id in the header line of a display mode file, or None."""
+    import re as _re
+    try:
+        match = _re.search(r"\[DisplayMode\\([0-9a-fA-F-]{36})\]", read_mode_file(path))
+        return System.Guid(match.group(1)) if match else None
+    except Exception:
+        return None
+
+
+def imported_mode(path, returned_id=None):
+    """The display mode this Rhino has for the file `path`: looked up by the id
+    the import returned, else by the id in the file. None when it is not there."""
+    for mode_id in (returned_id, mode_file_id(path)):
+        if mode_id is None or mode_id == System.Guid.Empty:
+            continue
+        mode = Rhino.Display.DisplayModeDescription.GetDisplayMode(mode_id)
+        if mode is not None:
+            return mode
+    return None
+
+
+def import_direct(path):
     try:
         mode_id = Rhino.Display.DisplayModeDescription.ImportFromFile(path)
     except Exception:
+        mode_id = None
+    return imported_mode(path, mode_id)
+
+
+def import_reencoded(path):
+    import shutil
+    import tempfile
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        text = read_mode_file(path)
+    except Exception:
         return None
-    if mode_id is None or mode_id == System.Guid.Empty:
-        return None
-    return mode_id
+    folder = tempfile.mkdtemp(prefix="np-mode-")
+    try:
+        for encoding in ("plain text", "UTF-16", "UTF-8 with a byte order mark"):
+            data = mode_file_bytes(text, encoding)
+            if data == raw:
+                continue
+            temp_path = os.path.join(folder, os.path.basename(path))
+            with open(temp_path, "wb") as handle:
+                handle.write(data)
+            mode = import_direct(temp_path)
+            if mode is not None:
+                return mode
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    return None
+
+
+def import_with_ironpython(path):
+    """Runs the import in the IronPython engine, where it also works in the Rhino 8
+    builds whose Python 3 engine cannot do it."""
+    import shutil
+    import tempfile
+    folder = tempfile.mkdtemp(prefix="np-mode-")
+    try:
+        script = os.path.join(folder, "np_import_mode.py")
+        literal = path.replace("\\", "\\\\").replace('"', '\\"')
+        with open(script, "wb") as handle:
+            handle.write(('# -*- coding: utf-8 -*-\nimport Rhino\n'
+                          'Rhino.Display.DisplayModeDescription.ImportFromFile(u"{}")\n'
+                          .format(literal)).encode("utf-8"))
+        Rhino.RhinoApp.RunScript('_-RunPythonScript "{}"'.format(script), False)
+        Rhino.RhinoApp.Wait()
+    except Exception:
+        pass
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    return imported_mode(path)
+
+
+def import_outside_undo(path):
+    """Closes the undo record the script engine opened, then imports."""
+    try:
+        serial = sc.doc.CurrentUndoRecordSerialNumber
+        if serial:
+            sc.doc.EndUndoRecord(serial)
+    except Exception:
+        pass
+    return import_direct(path)
+
+
+IMPORT_ROUTES = [
+    ("as saved", import_direct),
+    ("re-saved in another encoding", import_reencoded),
+    ("through IronPython", import_with_ironpython),
+    ("with the script's undo record closed", import_outside_undo),
+]
 
 
 def import_mode_file(path):
-    """Imports a display mode .ini; returns the DisplayModeDescription or None.
-    When Rhino refuses the file as it is, the same content is tried in the other
-    encodings."""
-    mode_id = import_mode_id(path)
-    if mode_id is None:
-        import shutil
-        import tempfile
-        try:
-            with open(path, "rb") as handle:
-                raw = handle.read()
-            text = read_mode_file(path)
-        except Exception:
-            return None
-        folder = tempfile.mkdtemp(prefix="np-mode-")
-        try:
-            for encoding in ("plain text", "UTF-16", "UTF-8 with a byte order mark"):
-                data = mode_file_bytes(text, encoding)
-                if data == raw:
-                    continue
-                temp_path = os.path.join(folder, os.path.basename(path))
-                with open(temp_path, "wb") as handle:
-                    handle.write(data)
-                mode_id = import_mode_id(temp_path)
-                if mode_id is not None:
-                    print("Display mode file '{}' was read after re-saving it as {}.".format(
-                        os.path.basename(path), encoding))
-                    break
-        finally:
-            shutil.rmtree(folder, ignore_errors=True)
-    if mode_id is None:
-        return None
-    return Rhino.Display.DisplayModeDescription.GetDisplayMode(mode_id)
+    """Imports a display mode .ini; returns the DisplayModeDescription or None."""
+    for index, (label, route) in enumerate(IMPORT_ROUTES):
+        mode = route(path)
+        if mode is not None:
+            if index:
+                print("Display mode file '{}' was imported {}.".format(os.path.basename(path), label))
+            return mode
+    return None
 
 
 def mode_import_report(path):
@@ -239,8 +309,11 @@ def mode_import_report(path):
     except Exception as ex:
         detail = "could not be read: {}".format(ex)
     system = "Windows" if Rhino.Runtime.HostUtils.RunningOnWindows else "Mac"
-    return "File: {}\n({})\nRhino {} on {}. Tried as saved, as plain text and as UTF-16.".format(
-        path, detail, Rhino.RhinoApp.Version, system)
+    return ("File: {}\n({})\nRhino {} on {}.\n\n"
+            "Tried it as saved, in other encodings, through IronPython and outside the undo record.\n"
+            "Rhino 8 for Windows older than 8.13 has a bug here, so update Rhino first.\n"
+            "Then run Display Modes > Check display mode import and send the report.").format(
+                path, detail, Rhino.RhinoApp.Version, system)
 
 
 def find_mode(name):

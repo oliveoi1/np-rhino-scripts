@@ -66,16 +66,18 @@ If you would rather see every step at once, lay them out in a row:
 
 1. Build and capture step 1 as above.
 2. Select the whole stage (or just press Enter for everything visible) and run
-   **Assembly Steps → Copy stage sideways**. Give a distance (it suggests one a
-   little wider than the stage; `Direction` picks Left or Right, `Symbols` chooses
-   whether the arrows and glue come along, normally they stay). The copy lands
-   beside the original and the camera moves the same distance, so the picture
-   looks identical but you are now looking at the copy, which is selected.
+   **Assembly Steps → Copy stage**. Give a distance (it suggests one a little
+   wider than the stage; `Direction` picks Right, Left, Forward or Back, `Symbols`
+   chooses whether the arrows and glue come along, normally they stay). The copy
+   lands that far from the original and the camera moves the same distance, so the
+   picture looks identical but you are now looking at the copy, which is selected.
+   That camera is saved: after orbiting around to work on the stage, **Assembly
+   Steps → Back to stage view** returns to it without moving any pieces.
 3. The copy is clean: the orange piece comes across as the real part, in the pose
    you left it. The stage you left behind keeps its orange piece as a plain orange
    object, so the row reads as a storyboard.
 4. Highlight the next piece in the copy, add symbols, **Capture step** with the next
-   number, then **Copy stage sideways** again. Capture saves the camera with each
+   number, then **Copy stage** again. Capture saves the camera with each
    step, so Restore step and Re-capture all still work; nothing needs hiding,
    because the other stages are out of frame.
 
@@ -97,8 +99,7 @@ If you would rather see every step at once, lay them out in a row:
 - **One construction plane for all steps.** A snapshot keeps the viewport's CPlane
   with the view. If you change the CPlane for one job (to flip a part, say) it would
   stay in that step and the view would orbit differently from then on. So the file
-  remembers the plane from your first capture, and **Capture step** and **Copy stage
-  sideways** put it back each time. To change it on purpose, set the CPlane you want
+  remembers the plane from your first capture, and **Capture step** and **Copy stage** put it back each time. To change it on purpose, set the CPlane you want
   and run **Assembly Steps → Use current CPlane for all steps**, then **Re-capture
   all steps** to bring the earlier steps onto it. The pictures do not change.
 

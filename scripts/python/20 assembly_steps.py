@@ -70,6 +70,7 @@ STEP_SNAPSHOT = "Assembly step {:02d}"       # snapshot saved per captured step
 STEP_PATTERN = re.compile(r"^Assembly step (\d+)$", re.IGNORECASE)
 DOC_SECTION = "NP-Assembly"                  # document user text: step -> highlighted ids
 SYMBOLS_SUFFIX = " symbols"                  # "<step name> symbols" -> ids of the symbols visible at capture
+STAGE_VIEW = "NP Assembly stage"             # named view: the camera Copy stage left on the newest stage
 CPLANE_KEY = "cplane"                        # the construction plane every step shares: origin;x axis;y axis
 
 HIGHLIGHT_LABEL = "Highlight selected piece"
@@ -77,7 +78,8 @@ CLEAR_LABEL = "Clear highlight"
 CAPTURE_LABEL = "Capture step"
 RESTORE_LABEL = "Restore step..."
 RECAPTURE_LABEL = "Re-capture all steps"
-COPY_STAGE_LABEL = "Copy stage sideways"
+COPY_STAGE_LABEL = "Copy stage"
+STAGE_VIEW_LABEL = "Back to stage view"
 SHOW_SYMBOLS_LABEL = "Show all symbols"
 SET_CPLANE_LABEL = "Use current CPlane for all steps"
 
@@ -118,7 +120,7 @@ def take_menu_choice(valid_choices):
 def menu_items():
     """Choices offered by the list dialog and by the NP Menu drawer."""
     return [HIGHLIGHT_LABEL, CLEAR_LABEL, CAPTURE_LABEL, RESTORE_LABEL, RECAPTURE_LABEL,
-            COPY_STAGE_LABEL, SHOW_SYMBOLS_LABEL, SET_CPLANE_LABEL]
+            COPY_STAGE_LABEL, STAGE_VIEW_LABEL, SHOW_SYMBOLS_LABEL, SET_CPLANE_LABEL]
 
 
 # --- defaults -----------------------------------------------------------------
@@ -799,7 +801,7 @@ def recorded_symbols(name):
 # A step snapshot keeps the viewport's construction plane with its view. A CPlane
 # changed for one job (flipping a part, say) would otherwise stay in that step and
 # every later one, so the view orbits differently from step to step. The file
-# therefore remembers one plane; Capture step and Copy stage sideways put it back.
+# therefore remembers one plane; Capture step and Copy stage put it back.
 
 def stored_cplane():
     text = sc.doc.Strings.GetValue(DOC_SECTION, CPLANE_KEY)
@@ -1192,7 +1194,7 @@ def recapture_all():
     rs.MessageBox(summary, 0, TITLE)
 
 
-# --- copy stage sideways (side-by-side steps) ----------------------------------
+# --- copy stage (side-by-side steps) --------------------------------------------
 
 def nice_number(value):
     """Rounds up to a tidy figure: 1234 -> 1500, 87 -> 90."""
@@ -1216,13 +1218,38 @@ def extent_along(objs, axis):
     return (high - low) if low is not None else 0.0
 
 
+STAGE_DIRECTIONS = ["Right", "Left", "Forward", "Back"]
+
+
+def stage_axis(vp, direction):
+    """Unit vector for a stage direction as seen in the viewport: Right and Left
+    run along the picture's horizontal, Forward and Back along the floor (the
+    construction plane), away from the camera and toward it."""
+    right = Rhino.Geometry.Vector3d(vp.CameraX)
+    right.Unitize()
+    if direction == "Right":
+        return right
+    if direction == "Left":
+        return -right
+    forward = Rhino.Geometry.Vector3d.CrossProduct(vp.ConstructionPlane().Normal, right)
+    if not forward.Unitize():
+        forward = Rhino.Geometry.Vector3d(vp.CameraDirection)
+        forward.Unitize()
+    # away from the camera; looking straight down, "away" is up the picture
+    if forward * (Rhino.Geometry.Vector3d(vp.CameraDirection) + Rhino.Geometry.Vector3d(vp.CameraY)) < 0:
+        forward.Reverse()
+    return forward if direction == "Forward" else -forward
+
+
 def ask_stage_distance(suggested, direction, symbols):
     """Distance prompt with Direction and Symbols options. Returns (distance, direction, symbols) or None."""
-    directions = ["Right", "Left"]
+    directions = STAGE_DIRECTIONS
     symbol_choices = ["Leave", "Copy"]
+    if direction not in directions:
+        direction = directions[0]
     while True:
         getter = Rhino.Input.Custom.GetNumber()
-        getter.SetCommandPrompt("Distance to copy the stage sideways (the camera moves with it)")
+        getter.SetCommandPrompt("Distance to copy the stage (the camera moves with it)")
         getter.SetDefaultNumber(suggested)
         getter.SetLowerLimit(0.0, True)
         dir_option = getter.AddOptionList("Direction", directions, directions.index(direction))
@@ -1332,11 +1359,35 @@ def copy_stage_objects(objs, vector, symbols="Leave"):
     return new_ids, len(frozen), left_symbols
 
 
+def save_stage_view(view):
+    """Remembers the view's camera as the named view STAGE_VIEW, replacing the last one."""
+    try:
+        return sc.doc.NamedViews.Add(STAGE_VIEW, view.ActiveViewportID) >= 0
+    except Exception:
+        return False
+
+
+def stage_view():
+    """Puts the camera back where Copy stage left it on the newest stage. Only the
+    camera moves: pieces pulled apart since then stay where they are."""
+    index = sc.doc.NamedViews.FindByName(STAGE_VIEW)
+    if index < 0:
+        rs.MessageBox("No stage view is saved in this file yet. Copy stage saves one each time it runs.", 0, TITLE)
+        return
+    view = sc.doc.Views.ActiveView
+    if not sc.doc.NamedViews.Restore(index, view.ActiveViewport):
+        rs.MessageBox("Could not restore the named view '{}'.".format(STAGE_VIEW), 0, TITLE)
+        return
+    view.Redraw()
+    print("Camera is back where Copy stage left it (named view '{}').".format(STAGE_VIEW))
+
+
 def copy_stage():
-    """Copies the selected stage sideways (along the view's horizontal) and moves the
-    camera the same way, so the picture looks the same but shows the copy. The copy
-    is clean: highlighted pieces come across as their real, un-highlighted parts
-    in the pose the orange copies had. The stage left behind is frozen as a picture."""
+    """Copies the selected stage right, left, forward or back as seen in the view and
+    moves the camera the same way, so the picture looks the same but shows the copy.
+    The copy is clean: highlighted pieces come across as their real, un-highlighted
+    parts in the pose the orange copies had. The stage left behind is frozen as a
+    picture. The camera on the new stage is saved as the named view STAGE_VIEW."""
     ids = rs.GetObjects("Select the stage to copy (Enter = everything visible)", preselect=True)
     if ids is None:
         ids = visible_object_ids()
@@ -1347,21 +1398,20 @@ def copy_stage():
     objs = [o for o in objs if o is not None]
     view = sc.doc.Views.ActiveView
     vp = view.ActiveViewport
-    axis = Rhino.Geometry.Vector3d(vp.CameraX)
-    axis.Unitize()
     defaults = load_defaults()
-    suggested = defaults["stage_distance"] or nice_number(extent_along(objs, axis) * 1.25)
+    if defaults["stage_direction"] not in STAGE_DIRECTIONS:
+        defaults["stage_direction"] = STAGE_DIRECTIONS[0]
+    suggested = defaults["stage_distance"] or nice_number(
+        extent_along(objs, stage_axis(vp, defaults["stage_direction"])) * 1.25)
     answer = ask_stage_distance(suggested, defaults["stage_direction"], defaults["stage_symbols"])
     if answer is None:
         return
     distance, direction, symbols = answer
     save_defaults({"stage_distance": float(distance), "stage_direction": direction, "stage_symbols": symbols})
-    vector = axis * distance
-    if direction == "Left":
-        vector.Reverse()
+    vector = stage_axis(vp, direction) * distance
 
     rs.EnableRedraw(False)
-    undo = sc.doc.BeginUndoRecord("Copy assembly stage sideways")
+    undo = sc.doc.BeginUndoRecord("Copy assembly stage")
     try:
         new_ids, frozen, left_symbols = copy_stage_objects(objs, vector, symbols)
         vp.SetCameraLocations(vp.CameraTarget + vector, vp.CameraLocation + vector)
@@ -1375,11 +1425,14 @@ def copy_stage():
         sc.doc.Objects.Select(new_id, True)
     view.Redraw()
     sc.doc.Views.Redraw()
+    view_saved = save_stage_view(view)
     note = ""
     if frozen:
         note += " {} highlighted piece(s) came across as clean parts; the stage left behind keeps them orange as plain objects.".format(frozen)
     if left_symbols:
         note += " {} symbol(s) stayed with the old stage.".format(left_symbols)
+    if view_saved:
+        note += " This camera is saved: '{}' brings it back after you orbit away.".format(STAGE_VIEW_LABEL)
     print("Copied {} object(s) {:g} {} and moved the camera with them; the copy is selected.{} "
           "Highlight the next piece and Capture step as usual.".format(len(new_ids), distance, direction.lower(), note))
 
@@ -1403,6 +1456,8 @@ def main():
         recapture_all()
     elif choice == COPY_STAGE_LABEL:
         copy_stage()
+    elif choice == STAGE_VIEW_LABEL:
+        stage_view()
     elif choice == SHOW_SYMBOLS_LABEL:
         show_symbols()
     elif choice == SET_CPLANE_LABEL:

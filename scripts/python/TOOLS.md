@@ -359,6 +359,8 @@ Run tools from the **NP** launcher (`np_launcher.py`) or the **NPP** tool panel 
 2. Say **Yes** to apply it to the active viewport.
 3. **Save one of my display modes to the team folder...** exports a mode as `.ini`; commit and push the file so everyone receives it.
 
+**Mac and Windows:** the team files are kept as plain text without a byte order mark, which both Rhinos read; the save option converts Rhino's own export to that form. An import that fails is tried again as plain text and as UTF-16 (20 and 21 do the same when they import a mode), and if it still fails the message names the file, its first bytes and the Rhino version.
+
 **Requires:** `.ini` files in `templates/display_modes/` (the folder ships with the install).
 
 ---

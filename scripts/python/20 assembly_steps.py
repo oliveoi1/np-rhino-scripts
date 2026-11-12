@@ -158,6 +158,103 @@ def save_defaults(data):
 
 # --- display modes ------------------------------------------------------------
 
+# --- display mode files ---------------------------------------------------------
+#
+# Rhino for Mac writes display mode .ini files as UTF-8 with a byte order mark and
+# reads any encoding. Rhino for Windows can trip over that mark: the first line,
+# the [DisplayMode\<id>] header, is then not recognised and the import returns
+# nothing. Team files are therefore kept as plain text without the mark, and a
+# failed import is tried again in the other encodings Rhino has used.
+
+def read_mode_file(path):
+    """Text of a display mode .ini, whichever encoding it was saved in."""
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", "replace")
+
+
+def mode_file_bytes(text, encoding):
+    if encoding == "UTF-16":
+        return b"\xff\xfe" + text.encode("utf-16-le")
+    if encoding == "UTF-8 with a byte order mark":
+        return b"\xef\xbb\xbf" + text.encode("utf-8")
+    return text.encode("utf-8")          # "plain text": no byte order mark
+
+
+def portable_mode_bytes(text):
+    """Bytes for a team file: plain text when it is all ASCII (every Rhino reads
+    that), UTF-16 when a name has other characters."""
+    try:
+        text.encode("ascii")
+    except UnicodeEncodeError:
+        return mode_file_bytes(text, "UTF-16")
+    return mode_file_bytes(text, "plain text")
+
+
+def import_mode_id(path):
+    try:
+        mode_id = Rhino.Display.DisplayModeDescription.ImportFromFile(path)
+    except Exception:
+        return None
+    if mode_id is None or mode_id == System.Guid.Empty:
+        return None
+    return mode_id
+
+
+def import_mode_file(path):
+    """Imports a display mode .ini; returns the DisplayModeDescription or None.
+    When Rhino refuses the file as it is, the same content is tried in the other
+    encodings."""
+    mode_id = import_mode_id(path)
+    if mode_id is None:
+        import shutil
+        import tempfile
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            text = read_mode_file(path)
+        except Exception:
+            return None
+        folder = tempfile.mkdtemp(prefix="np-mode-")
+        try:
+            for encoding in ("plain text", "UTF-16", "UTF-8 with a byte order mark"):
+                data = mode_file_bytes(text, encoding)
+                if data == raw:
+                    continue
+                temp_path = os.path.join(folder, os.path.basename(path))
+                with open(temp_path, "wb") as handle:
+                    handle.write(data)
+                mode_id = import_mode_id(temp_path)
+                if mode_id is not None:
+                    print("Display mode file '{}' was read after re-saving it as {}.".format(
+                        os.path.basename(path), encoding))
+                    break
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+    if mode_id is None:
+        return None
+    return Rhino.Display.DisplayModeDescription.GetDisplayMode(mode_id)
+
+
+def mode_import_report(path):
+    """Details for the message when a display mode file will not import."""
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        start = " ".join("{:02x}".format(b) for b in raw[:4])
+        detail = "{} bytes, starts with {}".format(len(raw), start)
+    except Exception as ex:
+        detail = "could not be read: {}".format(ex)
+    system = "Windows" if Rhino.Runtime.HostUtils.RunningOnWindows else "Mac"
+    return "File: {}\n({})\nRhino {} on {}. Tried as saved, as plain text and as UTF-16.".format(
+        path, detail, Rhino.RhinoApp.Version, system)
+
+
 def find_mode(name):
     for mode in Rhino.Display.DisplayModeDescription.GetDisplayModes():
         if mode.EnglishName == name:
@@ -178,7 +275,7 @@ def ensure_mode(name):
         return None
     mode = import_mode_file(path)
     if mode is None:
-        rs.MessageBox("Could not import display mode '{}'.".format(name), 0, TITLE)
+        rs.MessageBox("Could not import display mode '{}'.\n\n{}".format(name, mode_import_report(path)), 0, TITLE)
         return None
     print("Imported display mode '{}'.".format(name))
     return mode
@@ -748,17 +845,9 @@ def next_step_number(folder, stem):
 THICKNESS_KEYS = ("EdgeThickness", "NakedEdgeThickness", "MeshEdgeThickness")
 
 
-def import_mode_file(path):
-    mode_id = Rhino.Display.DisplayModeDescription.ImportFromFile(path)
-    if mode_id is None or mode_id == System.Guid.Empty:
-        return None
-    return Rhino.Display.DisplayModeDescription.GetDisplayMode(mode_id)
-
-
 def scaled_mode_text(path, scale):
     """The .ini text with every line thickness multiplied by `scale`."""
-    with open(path, "r", encoding="utf-8-sig") as handle:
-        lines = handle.read().splitlines()
+    lines = read_mode_file(path).splitlines()
     out = []
     for line in lines:
         key, sep, value = line.partition("=")
@@ -789,8 +878,8 @@ def with_scaled_line_weights(scale, action):
     try:
         for path in files:
             temp_path = os.path.join(temp_folder, os.path.basename(path))
-            with open(temp_path, "w", encoding="utf-8-sig", newline="") as handle:
-                handle.write(scaled_mode_text(path, scale))
+            with open(temp_path, "wb") as handle:
+                handle.write(portable_mode_bytes(scaled_mode_text(path, scale)))
             import_mode_file(temp_path)
         return action()
     finally:

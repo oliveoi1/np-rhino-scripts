@@ -20,3 +20,13 @@ Rhino display mode exports (`.ini`) shared across the team.
 
 Importing a mode whose id already exists updates it in place, so re-importing after a
 change refreshes everyone's copy rather than creating duplicates.
+
+## File encoding
+
+The `.ini` files here are plain text **without a byte order mark**. Rhino for Mac exports
+display modes as UTF-8 with that mark and reads anything; Rhino for Windows can fail on it
+("Could not import display mode"), because the first line, the `[DisplayMode\<id>]` header,
+is then not recognised. "Save one of my display modes to the team folder" re-saves the export
+in the portable form, so do not export into this folder by hand from Rhino's Options. If a
+file still fails, tools 19, 20 and 21 try it again as plain text and as UTF-16 before giving up,
+and the error message then names the file, its first bytes and the Rhino version.

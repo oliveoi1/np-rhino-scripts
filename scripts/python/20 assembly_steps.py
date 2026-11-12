@@ -569,6 +569,28 @@ def current_sources():
     return sorted(highlight_copies().keys())
 
 
+def drop_stale_copies(sources):
+    """Deletes the orange copies of the pieces in `sources` (id texts) whose
+    original is showing again. Rhino's own Snapshots panel and the Show command
+    bring a hidden original back without knowing about its copies, which leaves
+    both in the same place and the piece looking plain; the copies are then out
+    of date, so the piece is highlighted afresh. Returns how many pieces."""
+    dropped = 0
+    for source, copies in highlight_copies().items():
+        if source not in sources:
+            continue
+        try:
+            original = sc.doc.Objects.FindId(System.Guid(source))
+        except Exception:
+            original = None
+        if original is None or original.IsHidden:
+            continue
+        for copy in copies:
+            sc.doc.Objects.Delete(copy.Id, True)
+        dropped += 1
+    return dropped
+
+
 def apply_highlight(source_ids, active, keep=()):
     """Highlights `source_ids` (Guids), restoring any other highlight first.
     Returns (highlighted, restored, missing)."""
@@ -581,6 +603,7 @@ def apply_highlight(source_ids, active, keep=()):
             restored += 1
     layer_index = ensure_layer(HIGHLIGHT_LAYER, EDGE_GREY)
     ensure_layer(ARROW_LAYER, EDGE_GREY)
+    drop_stale_copies(wanted)
     already = set(highlight_copies().keys())
     done = 0
     missing = []

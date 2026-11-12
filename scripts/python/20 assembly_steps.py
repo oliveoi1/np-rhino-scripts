@@ -1375,7 +1375,11 @@ def stage_view():
         rs.MessageBox("No stage view is saved in this file yet. Copy stage saves one each time it runs.", 0, TITLE)
         return
     view = sc.doc.Views.ActiveView
-    if not sc.doc.NamedViews.Restore(index, view.ActiveViewport):
+    title = view.ActiveViewport.Name
+    restored = sc.doc.NamedViews.Restore(index, view.ActiveViewport)
+    if view.ActiveViewport.Name != title:
+        view.ActiveViewport.Name = title    # Restore also hands the viewport the named view's name
+    if not restored:
         rs.MessageBox("Could not restore the named view '{}'.".format(STAGE_VIEW), 0, TITLE)
         return
     view.Redraw()

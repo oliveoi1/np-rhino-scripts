@@ -8,9 +8,11 @@ Arrows and glue beads for the assembly instruction pictures made with
 like the parts, and carries its own display mode so it keeps its colour in
 the NP Assembly look (which paints everything else off-white):
 
-  Push / move arrow     a flat block arrow from a tail point to a tip point,
-                        facing the camera. Layer NP-Assembly - Arrows,
-                        mode NP Assembly - Arrows (green).
+  Push / move arrow     a flat block arrow of a set length: click what it
+                        points at, then the side it comes from. It snaps to
+                        the construction plane's axes and lies flat in one of
+                        its three planes. Layer NP-Assembly - Arrows, mode
+                        NP Assembly - Arrows (green).
   Rotate arrow (screw)  one or two curved arrows around a screw's axis (click
                         the screw, cam or grub screw, also when it sits
                         inside a panel block, or pick an axis), tighten or
@@ -69,6 +71,9 @@ ICONS = ["GlueBottle", "Bit", "Mallet", "Hammer", "Tick", "Cross"]
 DEFAULTS_FILENAME = "assembly_symbols_defaults.json"
 FALLBACK = {
     "arrow_width": 1.0,      # across the head
+    "arrow_length": 3.0,     # tail to tip
+    "arrow_gap": 0.25,       # clear distance between the tip and the point it points at
+    "arrow_plane": "Auto",   # plane the flat face lies in: Auto, XY, XZ, YZ (of the CPlane) or Free
     "thickness": 0.1,        # slab thickness of arrows
     "rotate_radius": 0.6,    # centreline radius of the curved arrows
     "rotate_width": 0.2,     # band width of the curved arrows
@@ -413,12 +418,23 @@ def slab(outline, plane, thickness):
     return brep
 
 
-def push_arrow_brep(start, end, width, thickness):
+def arrow_outline(start, end, width, normal=None):
+    """(outline curve, plane) of a block arrow from `start` (tail) to `end` (tip).
+    The flat face looks along `normal`, or at the camera when none is given."""
     direction = end - start
     length = direction.Length
     if length <= sc.doc.ModelAbsoluteTolerance:
-        return None
-    plane = facing_plane(start, direction)
+        return None, None
+    if normal is None:
+        plane = facing_plane(start, direction)
+    else:
+        x_axis = Rhino.Geometry.Vector3d(direction)
+        x_axis.Unitize()
+        y_axis = Rhino.Geometry.Vector3d.CrossProduct(normal, x_axis)
+        if not y_axis.Unitize():
+            plane = facing_plane(start, direction)
+        else:
+            plane = Rhino.Geometry.Plane(start, x_axis, y_axis)
     head_length = min(width * 0.9, length * 0.45)
     shaft = width * 0.25
     head = width * 0.5
@@ -426,8 +442,68 @@ def push_arrow_brep(start, end, width, thickness):
              (length, 0), (length - head_length, head), (length - head_length, shaft),
              (0, shaft), (0, -shaft)]
     points = [plane.PointAt(x, y) for x, y in local]
-    outline = Rhino.Geometry.PolylineCurve(points)
+    return Rhino.Geometry.PolylineCurve(points), plane
+
+
+def push_arrow_brep(start, end, width, thickness, normal=None):
+    outline, plane = arrow_outline(start, end, width, normal)
+    if outline is None:
+        return None
     return slab(outline, plane, thickness)
+
+
+ARROW_PLANES = ["Auto", "XY", "XZ", "YZ", "Free"]
+
+
+def snapped_arrow(viewport, cplane, target, mouse, choice, length, gap):
+    """Where a push arrow goes for a mouse position: (tail, tip, face normal),
+    or None while the mouse is still on the target.
+
+    The arrow points at `target` from the side the mouse is on, stopping `gap`
+    short of it. It runs along the construction plane axis that looks closest to
+    the mouse's direction on screen (so moving the mouse up the picture gives an
+    arrow coming down from above, which a point on the construction plane could
+    never say), and lies flat in one of the three planes: the one named by
+    `choice`, or with "Auto" the one of the two possible that faces the camera
+    more. "Free" is the old way: the mouse is the tail, the face looks at the
+    camera."""
+    if choice == "Free":
+        along = mouse - target
+        reach = along.Length
+        if not along.Unitize() or reach <= gap + sc.doc.ModelAbsoluteTolerance:
+            return None
+        return Rhino.Geometry.Point3d(mouse), target + along * gap, None
+    axes = {"X": cplane.XAxis, "Y": cplane.YAxis, "Z": cplane.ZAxis}
+    names = choice if choice in ("XY", "XZ", "YZ") else "XYZ"
+    origin = viewport.WorldToClient(target)
+    pointer = viewport.WorldToClient(mouse)
+    mx, my = pointer.X - origin.X, pointer.Y - origin.Y
+    reach = math.hypot(mx, my)
+    if reach < 3.0:
+        return None
+    best = None
+    for name in names:
+        for sign in (1.0, -1.0):
+            direction = axes[name] * sign
+            end = viewport.WorldToClient(target + direction * length)
+            sx, sy = end.X - origin.X, end.Y - origin.Y
+            span = math.hypot(sx, sy)
+            if span < 2.0:
+                continue        # this axis points at the camera; it cannot be aimed at
+            score = (sx * mx + sy * my) / (span * reach)
+            if best is None or score > best[0]:
+                best = (score, name, direction)
+    if best is None:
+        return None
+    _, name, direction = best
+    if names == "XYZ":
+        view_direction = Rhino.Geometry.Vector3d(viewport.CameraDirection)
+        others = [axes[n] for n in "XYZ" if n != name]
+        normal = max(others, key=lambda axis: abs(axis * view_direction))
+    else:
+        normal = [axes[n] for n in "XYZ" if n not in names][0]
+    tip = target + direction * gap
+    return tip + direction * length, tip, Rhino.Geometry.Vector3d(normal)
 
 
 def rotate_head_degrees(radius, band):
@@ -664,23 +740,77 @@ def pick_fitting():
 
 # --- tools ----------------------------------------------------------------------
 
+def number_option(getter, name, value, lowest):
+    """Adds a clickable number option to a getter and returns the object that holds its value."""
+    option = Rhino.Input.Custom.OptionDouble(float(value), True, lowest)
+    result = getter.AddOptionDouble(name, option)
+    if isinstance(result, tuple) and len(result) > 1 and result[1] is not None:
+        option = result[1]
+    return option
+
+
 def push_arrow():
     mode = ensure_mode(ARROW_MODE)
     if mode is None:
         return
     defaults = load_defaults()
-    start = rs.GetPoint("Arrow tail (where the part comes from)")
-    if start is None:
+    target = rs.GetPoint("Point the arrow points at")
+    if target is None:
         return
-    end = rs.GetPoint("Arrow tip (where it goes)", start)
-    if end is None:
-        return
-    width = rs.GetReal("Arrow width across the head", defaults["arrow_width"], 0.01)
-    if width is None:
-        return
-    defaults["arrow_width"] = float(width)
+    length = float(defaults["arrow_length"])
+    width = float(defaults["arrow_width"])
+    gap = float(defaults["arrow_gap"])
+    choice = defaults["arrow_plane"] if defaults["arrow_plane"] in ARROW_PLANES else ARROW_PLANES[0]
+    green = System.Drawing.Color.FromArgb(60, 150, 60)
+    placed = None
+    while placed is None:
+        getter = Rhino.Input.Custom.GetPoint()
+        if choice == "Free":
+            getter.SetCommandPrompt("Arrow tail (anywhere; the arrow faces the camera)")
+        else:
+            getter.SetCommandPrompt("Side the arrow comes from (move the mouse, click to place)")
+        length_option = number_option(getter, "Length", length, 0.01)
+        width_option = number_option(getter, "Width", width, 0.01)
+        gap_option = number_option(getter, "Gap", gap, 0.0)
+        plane_option = getter.AddOptionList("Plane", ARROW_PLANES, ARROW_PLANES.index(choice))
+
+        def preview(sender, args, choice=choice, length=length, width=width, gap=gap):
+            try:
+                found = snapped_arrow(args.Viewport, args.Viewport.ConstructionPlane(), target,
+                                      args.CurrentPoint, choice, length, gap)
+                args.Display.DrawPoint(target, green)
+                if found is None:
+                    return
+                outline, _ = arrow_outline(found[0], found[1], width, found[2])
+                if outline is not None:
+                    args.Display.DrawCurve(outline, green, 2)
+            except Exception:
+                pass
+
+        try:
+            getter.DynamicDraw += preview
+        except Exception:
+            pass                # no live preview; the click still works
+        result = getter.Get()
+        length = float(length_option.CurrentValue)
+        width = float(width_option.CurrentValue)
+        gap = float(gap_option.CurrentValue)
+        if result == Rhino.Input.GetResult.Option:
+            option = getter.Option()
+            if option is not None and option.Index == plane_option:
+                choice = ARROW_PLANES[option.CurrentListOptionIndex]
+            continue
+        if result != Rhino.Input.GetResult.Point:
+            return
+        view = getter.View() or sc.doc.Views.ActiveView
+        viewport = view.ActiveViewport
+        placed = snapped_arrow(viewport, viewport.ConstructionPlane(), target, getter.Point(), choice, length, gap)
+        if placed is None:
+            print("Click away from the point the arrow points at, on the side it comes from.")
+    defaults.update({"arrow_length": length, "arrow_width": width, "arrow_gap": gap, "arrow_plane": choice})
     save_defaults(defaults)
-    brep = push_arrow_brep(start, end, float(width), defaults["thickness"])
+    tail, tip, normal = placed
+    brep = push_arrow_brep(tail, tip, width, defaults["thickness"], normal)
     if brep is None:
         rs.MessageBox("Could not build the arrow (tail and tip are too close).", 0, TITLE)
         return
@@ -693,7 +823,8 @@ def push_arrow():
     if new_id:
         rs.UnselectAllObjects()
         rs.SelectObject(new_id)
-        print("Push arrow added on '{}' (width {}).".format(ARROW_LAYER, width))
+        print("Push arrow added on '{}' (length {:g}, width {:g}, gap {:g}, plane {}).".format(
+            ARROW_LAYER, tail.DistanceTo(tip), width, gap, choice))
 
 
 def rotate_arrow():

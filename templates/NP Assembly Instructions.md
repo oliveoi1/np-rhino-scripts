@@ -31,8 +31,10 @@ for the pictures.
    restores the previous one.
 4. **Arrows and glue.** **Assembly Symbols** (next to Assembly Steps in the panel)
    makes them as small solids that keep their colour in the drawing:
-   - **Push / move arrow**: click the tail, then the tip. Green block arrow facing
-     the camera.
+   - **Push / move arrow**: click what the arrow points at, then move the mouse to
+     the side it comes from and click. The arrow has a set length and snaps to the
+     model's axes; `Length`, `Width`, `Gap` and `Plane` on the command line change
+     the size and which plane it lies flat in, and are remembered.
    - **Rotate arrow (screw)**: click the screw, cam or grub screw; two curved green
      arrows appear above it, Tighten or Loosen. It also works on a fitting that sits
      inside a panel block: click the fitting itself, not the bare panel.

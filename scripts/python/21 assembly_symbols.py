@@ -533,10 +533,58 @@ def flat_piece(plane, curves, thickness, lift=0):
     return solid
 
 
-def icon_pieces(name, plane, size):
-    """(curves, style, lift) pieces of the named icon, world space, height `size`."""
-    pieces = []
+# Tools that can be aimed: local point of the working end (lands on the first
+# click), local point the second click pulls toward (the body or handle end), and
+# the prompts for the two clicks. Tick and Cross are simply centred.
+ICON_AIM = {
+    "GlueBottle": ((0.0, 0.5), (0.0, -0.5), "Tip of the glue nozzle", "Click where the bottle body goes"),
+    "Bit": ((0.0, -0.5), (0.0, 0.5), "Tip of the screwdriver bit", "Click where the shank goes"),
+    "Mallet": ((-0.42, 0.325), (0.0, -0.5), "Point the mallet strikes", "Click where the handle end goes"),
+    "Hammer": ((0.35, 0.35), (0.12, -0.5), "Point the hammer strikes", "Click where the handle end goes"),
+}
+
+
+def aimed_plane(plane, size, name, toward):
+    """`plane` (origin = first click, facing the camera) turned and shifted so the
+    icon's working end sits on the first click and its body lies toward the point
+    `toward`. Returns None when `toward` gives no direction."""
+    anchor, back = ICON_AIM[name][0], ICON_AIM[name][1]
+    ok, u, v = plane.ClosestParameter(toward)
+    if not ok or math.hypot(u, v) < 1e-9:
+        return None
+    angle = math.atan2(v, u) - math.atan2(back[1] - anchor[1], back[0] - anchor[0])
+    # built from scratch: Plane is a struct, so changing a copy in place is unreliable from Python
+    x_axis = plane.XAxis * math.cos(angle) + plane.YAxis * math.sin(angle)
+    y_axis = plane.YAxis * math.cos(angle) - plane.XAxis * math.sin(angle)
+    origin = plane.Origin - x_axis * (anchor[0] * size) - y_axis * (anchor[1] * size)
+    return Rhino.Geometry.Plane(origin, x_axis, y_axis)
+
+
+def anchored_plane(plane, size, name):
+    """`plane` shifted so the working end of the icon, in its standard
+    orientation, sits on the plane origin."""
+    anchor = ICON_AIM[name][0]
     if name == "GlueBottle":
+        angle = math.radians(-35.0)          # the standard tilt of the bottle
+        anchor = (anchor[0] * math.cos(angle) - anchor[1] * math.sin(angle),
+                  anchor[0] * math.sin(angle) + anchor[1] * math.cos(angle))
+    origin = plane.Origin - plane.XAxis * (anchor[0] * size) - plane.YAxis * (anchor[1] * size)
+    return Rhino.Geometry.Plane(origin, plane.XAxis, plane.YAxis)
+
+
+def icon_pieces(name, plane, size, aimed=False):
+    """(curves, style, lift) pieces of the named icon, world space, height `size`.
+    `aimed` = the plane is already turned to the wanted direction (aimed_plane)."""
+    pieces = []
+    if name == "GlueBottle" and aimed:
+        pieces.append(([local_curve(plane, size, rect(-0.22, -0.5, 0.22, 0.05), 0.05)], "glue", 0))
+        pieces.append(([local_curve(plane, size, [(-0.22, 0.05), (0.22, 0.05), (0.09, 0.22), (-0.09, 0.22)])], "glue", 0))
+        pieces.append(([local_curve(plane, size, rect(-0.1, 0.22, 0.1, 0.32))], "grey", 0))
+        pieces.append(([local_curve(plane, size, [(-0.06, 0.32), (0.06, 0.32), (0.0, 0.5)])], "grey", 0))
+        # the drop leaves the nozzle along its axis, pointed end toward the tip
+        centre_y = 0.72
+        pieces.append(([local_curve(plane, size, [(x, 2 * centre_y - y) for x, y in drop(0.0, centre_y, 0.06)])], "glue", 0))
+    elif name == "GlueBottle":
         tilt = -35.0   # nozzle leaning right, drop falling out of it
         pieces.append(([local_curve(plane, size, rect(-0.22, -0.5, 0.22, 0.05), 0.05, tilt)], "glue", 0))
         pieces.append(([local_curve(plane, size, [(-0.22, 0.05), (0.22, 0.05), (0.09, 0.22), (-0.09, 0.22)], 0, tilt)], "glue", 0))
@@ -587,9 +635,13 @@ def tool_callout():
     if not icon:
         return
     icon = icon[0]
-    centre = rs.GetPoint("Centre of the {} icon".format(icon))
+    aim = ICON_AIM.get(icon)
+    centre = rs.GetPoint(aim[2] if aim else "Centre of the {} icon".format(icon))
     if centre is None:
         return
+    toward = None
+    if aim:
+        toward = rs.GetPoint(aim[3] + " (Enter for the standard orientation)", centre)
     size = rs.GetReal("Icon height", defaults["icon_size"], 0.01)
     if size is None:
         return
@@ -598,12 +650,19 @@ def tool_callout():
     save_defaults(defaults)
 
     plane = screen_plane(centre)
+    aimed = False
+    if aim:
+        turned = aimed_plane(plane, float(size), icon, toward) if toward is not None else None
+        if turned is not None:
+            plane, aimed = turned, True
+        else:
+            plane = anchored_plane(plane, float(size), icon)
     layer_index = ensure_layer(ICON_LAYER, EDGE_GREY)
     modes = {"grey": grey, "glue": glue, "green": green, "red": red, "white": None}
     thickness = defaults["thickness"]
     undo = sc.doc.BeginUndoRecord("Assembly tool call-out")
     made = []
-    for curves, style, lift in icon_pieces(icon, plane, float(size)):
+    for curves, style, lift in icon_pieces(icon, plane, float(size), aimed):
         brep = flat_piece(plane, curves, thickness, lift)
         if brep is None:
             continue

@@ -70,6 +70,7 @@ STEP_SNAPSHOT = "Assembly step {:02d}"       # snapshot saved per captured step
 STEP_PATTERN = re.compile(r"^Assembly step (\d+)$", re.IGNORECASE)
 DOC_SECTION = "NP-Assembly"                  # document user text: step -> highlighted ids
 SYMBOLS_SUFFIX = " symbols"                  # "<step name> symbols" -> ids of the symbols visible at capture
+CPLANE_KEY = "cplane"                        # the construction plane every step shares: origin;x axis;y axis
 
 HIGHLIGHT_LABEL = "Highlight selected piece"
 CLEAR_LABEL = "Clear highlight"
@@ -78,6 +79,7 @@ RESTORE_LABEL = "Restore step..."
 RECAPTURE_LABEL = "Re-capture all steps"
 COPY_STAGE_LABEL = "Copy stage sideways"
 SHOW_SYMBOLS_LABEL = "Show all symbols"
+SET_CPLANE_LABEL = "Use current CPlane for all steps"
 
 DEFAULTS_FILENAME = "assembly_steps_defaults.json"
 FALLBACK = {"scale": 3, "stage_distance": 0.0, "stage_direction": "Right", "stage_symbols": "Leave"}
@@ -116,7 +118,7 @@ def take_menu_choice(valid_choices):
 def menu_items():
     """Choices offered by the list dialog and by the NP Menu drawer."""
     return [HIGHLIGHT_LABEL, CLEAR_LABEL, CAPTURE_LABEL, RESTORE_LABEL, RECAPTURE_LABEL,
-            COPY_STAGE_LABEL, SHOW_SYMBOLS_LABEL]
+            COPY_STAGE_LABEL, SHOW_SYMBOLS_LABEL, SET_CPLANE_LABEL]
 
 
 # --- defaults -----------------------------------------------------------------
@@ -599,6 +601,71 @@ def recorded_symbols(name):
     return parse_ids(text)
 
 
+# --- shared construction plane ---------------------------------------------------
+#
+# A step snapshot keeps the viewport's construction plane with its view. A CPlane
+# changed for one job (flipping a part, say) would otherwise stay in that step and
+# every later one, so the view orbits differently from step to step. The file
+# therefore remembers one plane; Capture step and Copy stage sideways put it back.
+
+def stored_cplane():
+    text = sc.doc.Strings.GetValue(DOC_SECTION, CPLANE_KEY)
+    if not text:
+        return None
+    try:
+        origin, x_axis, y_axis = [[float(v) for v in part.split(",")] for part in text.split(";")]
+        plane = Rhino.Geometry.Plane(Rhino.Geometry.Point3d(*origin),
+                                     Rhino.Geometry.Vector3d(*x_axis), Rhino.Geometry.Vector3d(*y_axis))
+    except Exception:
+        return None
+    return plane if plane.IsValid else None
+
+
+def store_cplane(plane):
+    parts = []
+    for item in (plane.Origin, plane.XAxis, plane.YAxis):
+        parts.append("{!r},{!r},{!r}".format(item.X, item.Y, item.Z))
+    sc.doc.Strings.SetString(DOC_SECTION, CPLANE_KEY, ";".join(parts))
+
+
+def same_orientation(a, b):
+    return a.XAxis.IsParallelTo(b.XAxis, 1e-6) == 1 and a.YAxis.IsParallelTo(b.YAxis, 1e-6) == 1
+
+
+def shared_cplane(vp, shift=None):
+    """Puts the file's shared construction plane on the viewport `vp` and returns
+    (plane, note). The first call in a file records the viewport's current plane.
+    Only the orientation is enforced: a plane that already has it keeps its
+    origin. `shift` moves the plane with a copied stage."""
+    current = vp.ConstructionPlane()
+    stored = stored_cplane()
+    note = ""
+    if stored is None:
+        plane = current
+        note = "This viewport's CPlane is now the one every step uses."
+    elif same_orientation(current, stored):
+        plane = current
+    else:
+        plane = stored
+        note = "CPlane put back to the one the steps share."
+    if shift is not None:
+        plane = Rhino.Geometry.Plane(plane.Origin + shift, plane.XAxis, plane.YAxis)
+    vp.SetConstructionPlane(plane)
+    store_cplane(plane)
+    return plane, note
+
+
+def set_shared_cplane():
+    vp = sc.doc.Views.ActiveView.ActiveViewport
+    store_cplane(vp.ConstructionPlane())
+    count = len(step_snapshots())
+    note = ""
+    if count:
+        note = (" The {} step(s) already captured keep the plane they were saved with; "
+                "Re-capture all steps updates them.".format(count))
+    print("The CPlane of viewport '{}' is now the one every assembly step uses.{}".format(vp.Name, note))
+
+
 def highlight():
     base = ensure_mode(BASE_MODE)
     active = ensure_mode(ACTIVE_MODE)
@@ -801,6 +868,7 @@ def capture():
 
     view = sc.doc.Views.ActiveView
     viewport_to_base_mode(base)
+    _, cplane_note = shared_cplane(view.ActiveViewport)
     rs.EnableRedraw(False)
     undo = sc.doc.BeginUndoRecord("Capture assembly step")
     try:
@@ -818,6 +886,19 @@ def capture():
     print("Snapshot '{}' {} with {} highlighted piece(s); Restore step brings it back, "
           "Re-capture all steps redoes every image.".format(
               step_name(step), "saved" if saved else "NOT saved", len(sources)))
+    if cplane_note:
+        print(cplane_note)
+
+
+def resave_step_snapshot(name, active):
+    """Saves the step's snapshot again from the current state (for a changed
+    CPlane) without touching what the step records: highlight off, save, highlight on."""
+    sources = [System.Guid(s) for s in current_sources()]
+    clear_all()
+    saved = save_snapshot(name)
+    if sources:
+        apply_highlight(sources, active)
+    return saved
 
 
 def bring_back_step(name, base, active):
@@ -897,6 +978,15 @@ def recapture_all():
                 continue
             if missing:
                 problems.append("{}: {} highlighted piece(s) no longer exist".format(name, len(missing)))
+            shared = stored_cplane()
+            if shared is not None and not same_orientation(view.ActiveViewport.ConstructionPlane(), shared):
+                # origin stays with the step's own stage; only the orientation is shared
+                here = view.ActiveViewport.ConstructionPlane().Origin
+                view.ActiveViewport.SetConstructionPlane(Rhino.Geometry.Plane(here, shared.XAxis, shared.YAxis))
+                if resave_step_snapshot(name, active):
+                    print("{}: CPlane set to the shared one, snapshot updated.".format(name))
+                else:
+                    problems.append("{}: snapshot could not be saved with the shared CPlane".format(name))
             bitmap, width, height = with_grey_fittings(lambda: capture_view(view, int(scale)))
             if bitmap is None:
                 problems.append("{}: capture failed".format(name))
@@ -1090,6 +1180,7 @@ def copy_stage():
     try:
         new_ids, frozen, left_symbols = copy_stage_objects(objs, vector, symbols)
         vp.SetCameraLocations(vp.CameraTarget + vector, vp.CameraLocation + vector)
+        shared_cplane(vp, vector)   # the plane travels with the stage, same orientation
     finally:
         if undo:
             sc.doc.EndUndoRecord(undo)
@@ -1129,6 +1220,8 @@ def main():
         copy_stage()
     elif choice == SHOW_SYMBOLS_LABEL:
         show_symbols()
+    elif choice == SET_CPLANE_LABEL:
+        set_shared_cplane()
 
 
 if __name__ == "__main__":

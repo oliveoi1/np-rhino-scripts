@@ -37,9 +37,11 @@ for the pictures.
      above its head, Tighten or Loosen.
    - **Glue bead**: select a curve or click along the joint; a pale yellow bead with
      round ends, on its own layer `NP-Assembly - Glue`.
-   - **Tool call-out**: a flat icon at a clicked point: glue bottle, screwdriver bit,
-     rubber mallet, hammer, green tick or red cross. Each is one group; scale or move
-     it like any object.
+   - **Tool call-out**: a flat icon: glue bottle, screwdriver bit, rubber mallet,
+     hammer, green tick or red cross. For the four tools, click where the tip (or the
+     striking face) goes, then click where the body or handle should lie, and the
+     icon turns to match; Enter instead of the second click gives the standard
+     orientation. Each is one group; scale or move it like any object.
    - **Moving blanket**: for the "clean surface" step. Press Enter to fit it under
      everything in view, or click two corners. Dark blue with a quilt pattern.
    Put step numbers in with `TextDot` or the annotation styles from
@@ -90,6 +92,14 @@ If you would rather see every step at once, lay them out in a row:
   symbol back if you want them all on screen again.
 
 ## Good to know
+
+- **One construction plane for all steps.** A snapshot keeps the viewport's CPlane
+  with the view. If you change the CPlane for one job (to flip a part, say) it would
+  stay in that step and the view would orbit differently from then on. So the file
+  remembers the plane from your first capture, and **Capture step** and **Copy stage
+  sideways** put it back each time. To change it on purpose, set the CPlane you want
+  and run **Assembly Steps → Use current CPlane for all steps**, then **Re-capture
+  all steps** to bring the earlier steps onto it. The pictures do not change.
 
 - Screws and other hardware on the `NP-Fittings` layer come out dark grey in the
   captures (a third mode, `NP Assembly - Fittings`). On screen they stay off-white;

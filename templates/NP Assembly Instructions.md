@@ -33,8 +33,9 @@ for the pictures.
    makes them as small solids that keep their colour in the drawing:
    - **Push / move arrow**: click the tail, then the tip. Green block arrow facing
      the camera.
-   - **Rotate arrow (screw)**: click the screw block; two curved green arrows appear
-     above its head, Tighten or Loosen.
+   - **Rotate arrow (screw)**: click the screw, cam or grub screw; two curved green
+     arrows appear above it, Tighten or Loosen. It also works on a fitting that sits
+     inside a panel block: click the fitting itself, not the bare panel.
    - **Glue bead**: select a curve or click along the joint; a pale yellow bead with
      round ends, on its own layer `NP-Assembly - Glue`.
    - **Tool call-out**: a flat icon: glue bottle, screwdriver bit, rubber mallet,

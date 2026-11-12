@@ -11,9 +11,10 @@ the NP Assembly look (which paints everything else off-white):
   Push / move arrow     a flat block arrow from a tail point to a tip point,
                         facing the camera. Layer NP-Assembly - Arrows,
                         mode NP Assembly - Arrows (green).
-  Rotate arrow (screw)  one or two curved arrows around a screw's axis (pick
-                        the screw block, or pick an axis), tighten or loosen.
-                        Same layer and mode.
+  Rotate arrow (screw)  one or two curved arrows around a screw's axis (click
+                        the screw, cam or grub screw, also when it sits
+                        inside a panel block, or pick an axis), tighten or
+                        loosen. Same layer and mode.
   Glue bead             a round-ended bead along picked or drawn curves.
                         Layer NP-Assembly - Glue, mode NP Assembly - Glue.
   Moving blanket        a dark blue quilted slab under the parts: two corners,
@@ -71,7 +72,8 @@ FALLBACK = {
     "thickness": 0.1,        # slab thickness of arrows
     "rotate_radius": 0.6,    # centreline radius of the curved arrows
     "rotate_width": 0.2,     # band width of the curved arrows
-    "rotate_sweep": 150.0,   # degrees per curved arrow
+    "rotate_sweep": 150.0,   # degrees per curved arrow, head included
+    "rotate_gap": 40.0,      # least open angle between one arrow's tip and the next tail
     "rotate_offset": 0.75,   # distance above the screw's insertion point
     "double": True,          # two curved arrows (the "turn" symbol)
     "glue_diameter": 0.1875,
@@ -398,7 +400,15 @@ def slab(outline, plane, thickness):
     if extrusion is None:
         return None
     brep = extrusion.ToBrep(True)
-    if brep is not None and brep.SolidOrientation == Rhino.Geometry.BrepSolidOrientation.Inward:
+    if brep is None:
+        return None
+    # The extrusion runs up or down depending on which way the outline winds;
+    # slide the result so it straddles the plane either way.
+    box = brep.GetBoundingBox(plane)
+    drift = (box.Min.Z + box.Max.Z) / 2.0
+    if abs(drift) > sc.doc.ModelAbsoluteTolerance * 0.01:
+        brep.Translate(plane.Normal * (-drift))
+    if brep.SolidOrientation == Rhino.Geometry.BrepSolidOrientation.Inward:
         brep.Flip()
     return brep
 
@@ -420,20 +430,37 @@ def push_arrow_brep(start, end, width, thickness):
     return slab(outline, plane, thickness)
 
 
+def rotate_head_degrees(radius, band):
+    """Angle the arrow head takes up on the circle."""
+    return math.degrees(band * 1.8 / radius)
+
+
+def rotate_spans(sweep, gap, count, radius, band):
+    """(span, start offset) in degrees for `count` curved arrows spaced evenly
+    round the circle. The span runs from tail to tip, head included, and is
+    held back so at least `gap` degrees stay open before the next tail."""
+    share = 360.0 / count
+    span = min(abs(sweep), share - gap)
+    span = max(span, rotate_head_degrees(radius, band) * 1.5)
+    return span, (share - span) / 2.0
+
+
 def rotate_arrow_brep(plane, radius, band, sweep_degrees, start_degrees, thickness):
-    """One curved arrow in `plane` around its origin. Positive sweep turns
-    anticlockwise seen from the plane normal, negative turns clockwise."""
+    """One curved arrow in `plane` around its origin, from its tail at
+    `start_degrees` to its tip `sweep_degrees` further on (the head is part of
+    the sweep). Positive sweep turns anticlockwise seen from the plane normal,
+    negative turns clockwise."""
     def polar(angle_degrees, r):
         angle = math.radians(angle_degrees)
         return plane.PointAt(r * math.cos(angle), r * math.sin(angle))
 
+    sign = 1 if sweep_degrees >= 0 else -1
+    head_angle = min(rotate_head_degrees(radius, band), abs(sweep_degrees) * 0.6) * sign
     a0 = start_degrees
-    a1 = start_degrees + sweep_degrees
+    a1 = start_degrees + sweep_degrees - head_angle     # where the band ends and the head starts
     mid = (a0 + a1) / 2.0
     inner = radius - band / 2.0
     outer = radius + band / 2.0
-    head_length = band * 1.8
-    head_angle = math.degrees(head_length / radius) * (1 if sweep_degrees >= 0 else -1)
     pieces = [
         Rhino.Geometry.ArcCurve(Rhino.Geometry.Arc(polar(a0, inner), polar(mid, inner), polar(a1, inner))),
         Rhino.Geometry.PolylineCurve([polar(a1, inner), polar(a1, radius - band), polar(a1 + head_angle, radius),
@@ -455,14 +482,184 @@ def glue_breps(curve, diameter):
     return list(breps or [])
 
 
-def instance_axis(obj):
-    """Insertion point and unit local +Z of a block instance (fittings: out of the face)."""
-    xform = obj.InstanceXform
+# --- fittings nested inside a picked block -------------------------------------------
+
+PICK_SLACK = 0.1     # a fitting's box grows by this share of its size, so a near miss still counts
+PICK_AXIS = "axis"   # pick_fitting's answer when the user pressed Enter to pick an axis by hand
+
+
+def layer_is_on(obj):
+    return sc.doc.Layers[obj.Attributes.LayerIndex].IsVisible
+
+
+def moved(point, xform):
+    result = Rhino.Geometry.Point3d(point)
+    result.Transform(xform)
+    return result
+
+
+def definition_box(idef, cache):
+    """Box of what a block definition shows, in the block's own coordinates.
+    Parts on layers that are off (setout markers, hole cutters) do not count."""
+    if idef.Index in cache:
+        return cache[idef.Index]
+    cache[idef.Index] = Rhino.Geometry.BoundingBox.Empty
+    box = Rhino.Geometry.BoundingBox.Empty
+    for obj in idef.GetObjects():
+        if not layer_is_on(obj):
+            continue
+        if isinstance(obj, Rhino.DocObjects.InstanceObject):
+            inner = definition_box(obj.InstanceDefinition, cache)
+            if inner.IsValid:
+                inner = Rhino.Geometry.BoundingBox(inner.Min, inner.Max)
+                inner.Transform(obj.InstanceXform)
+                box.Union(inner)
+        else:
+            box.Union(obj.Geometry.GetBoundingBox(True))
+    cache[idef.Index] = box
+    return box
+
+
+def nested_instances(instance):
+    """(definition, world transform) of every block nested inside `instance`,
+    at any depth, leaving out blocks on layers that are off."""
+    found = []
+
+    def walk(idef, xform, depth):
+        if depth > 12:
+            return
+        for obj in idef.GetObjects():
+            if not isinstance(obj, Rhino.DocObjects.InstanceObject) or not layer_is_on(obj):
+                continue
+            inner = Rhino.Geometry.Transform.Multiply(xform, obj.InstanceXform)
+            found.append((obj.InstanceDefinition, inner))
+            walk(obj.InstanceDefinition, inner, depth + 1)
+
+    walk(instance.InstanceDefinition, instance.InstanceXform, 0)
+    return found
+
+
+def xform_axis(xform):
+    """Insertion point and unit local +Z of a block transform (fittings: out of the face)."""
     origin = Rhino.Geometry.Point3d(xform.M03, xform.M13, xform.M23)
     axis = Rhino.Geometry.Vector3d(xform.M02, xform.M12, xform.M22)
+    scale = axis.Length
     if not axis.Unitize():
-        return None, None
-    return origin, axis
+        return None, None, 0.0
+    return origin, axis, scale
+
+
+def holds_blocks(idef):
+    """True when a block definition shows other blocks (a panel with its fittings)."""
+    return any(isinstance(obj, Rhino.DocObjects.InstanceObject) and layer_is_on(obj)
+               for obj in idef.GetObjects())
+
+
+def fitting_under_pick(instance, ray, point=None):
+    """The nested block of `instance` meant by a click: (definition, world
+    transform), or None when the pick `ray` misses every nested block.
+
+    Blocks that hold no further blocks (cams, grub screws, screws) win over
+    the panels around them. `point` is where the click landed on the picked
+    block: a fitting further from it than its own size is left out, so a click
+    on a bare panel does not reach a fitting on the far side of the product,
+    and of the fittings left the one nearest the point wins (a cam, not the
+    grub screw seated inside it). Without `point`, or on a tie, the smallest."""
+    tolerance = sc.doc.ModelAbsoluteTolerance
+    cache = {}
+    best = None
+    for idef, xform in nested_instances(instance):
+        box = definition_box(idef, cache)
+        if not box.IsValid:
+            continue
+        size = box.Diagonal.Length
+        ok, inverse = xform.TryGetInverse()
+        if not ok or size <= tolerance:
+            continue
+        grown = Rhino.Geometry.BoundingBox(box.Min, box.Max)
+        grown.Inflate(size * PICK_SLACK)
+        local_ray = Rhino.Geometry.Line(moved(ray.From, inverse), moved(ray.To, inverse))
+        hit, _ = Rhino.Geometry.Intersect.Intersection.LineBox(local_ray, grown, tolerance)
+        if not hit:
+            continue
+        gap = 0.0
+        if point is not None:
+            local_point = moved(point, inverse)
+            gap = grown.ClosestPoint(local_point).DistanceTo(local_point)
+            if gap > size:
+                continue
+        scale = xform_axis(xform)[2]
+        rank = (holds_blocks(idef), round(gap * scale, 4), size * scale)
+        if best is None or rank < best[0]:
+            best = (rank, idef, xform)
+    return (best[1], best[2]) if best else None
+
+
+def pick_ray(getter, objref):
+    """(line through the click along the view, point clicked on the object or None)."""
+    view = getter.View() or sc.doc.Views.ActiveView
+    viewport = view.ActiveViewport
+    point = objref.SelectionPoint()
+    if point.IsValid:
+        if viewport.IsPerspectiveProjection:
+            return Rhino.Geometry.Line(viewport.CameraLocation, point), point
+        direction = viewport.CameraDirection
+        return Rhino.Geometry.Line(point - direction, point + direction), point
+    try:
+        rect = getter.PickRectangle
+        if callable(rect):
+            rect = rect()
+        line = viewport.ClientToWorld(System.Drawing.Point(rect.Left, rect.Top))
+        if line.IsValid and line.Length > 0:
+            return line, None
+    except Exception:
+        pass
+    return None, None
+
+
+def pick_fitting():
+    """Ask for the screw or fitting to turn. Returns (origin, axis, description),
+    PICK_AXIS when the user pressed Enter to pick an axis by hand, or None on
+    cancel. A click on a fitting nested inside a panel or product block (cam,
+    grub screw, screw) gives that fitting, not the block around it."""
+    prompt = "Click the screw, cam or fitting to turn (Enter to pick an axis instead)"
+    preselect = True
+    while True:
+        getter = Rhino.Input.Custom.GetObject()
+        getter.SetCommandPrompt(prompt)
+        getter.GeometryFilter = Rhino.DocObjects.ObjectType.InstanceReference
+        getter.SubObjectSelect = False
+        getter.AcceptNothing(True)
+        getter.EnablePreSelect(preselect, True)
+        result = getter.Get()
+        if result == Rhino.Input.GetResult.Nothing:
+            return PICK_AXIS
+        if result != Rhino.Input.GetResult.Object:
+            return None
+        objref = getter.Object(0)
+        obj = objref.Object()
+        if not isinstance(obj, Rhino.DocObjects.InstanceObject):
+            return None
+        name = obj.InstanceDefinition.Name
+        if getter.ObjectsWerePreselected and nested_instances(obj):
+            # A selected panel says nothing about which of its fittings is meant.
+            sc.doc.Objects.UnselectAll()
+            sc.doc.Views.Redraw()
+            prompt = "Click the fitting inside '{}' (Enter to pick an axis instead)".format(name)
+            preselect = False
+            continue
+        ray, point = pick_ray(getter, objref)
+        nested = fitting_under_pick(obj, ray, point) if ray is not None else None
+        if nested:
+            origin, axis, _ = xform_axis(nested[1])
+            description = "'{}' inside '{}'".format(nested[0].Name, name)
+        else:
+            origin, axis, _ = xform_axis(obj.InstanceXform)
+            description = "'{}'".format(name)
+        if origin is None:
+            rs.MessageBox("That block has no usable axis.", 0, TITLE)
+            return None
+        return origin, axis, description
 
 
 # --- tools ----------------------------------------------------------------------
@@ -504,14 +701,13 @@ def rotate_arrow():
     if mode is None:
         return
     defaults = load_defaults()
-    picked = rs.GetObject("Pick the screw or fitting block to turn (Enter to pick an axis instead)",
-                          rs.filter.instance, preselect=True)
-    if picked:
-        obj = sc.doc.Objects.FindId(picked)
-        origin, axis = instance_axis(obj)
-        if origin is None:
-            rs.MessageBox("That block has no usable axis.", 0, TITLE)
-            return
+    picked = pick_fitting()
+    if picked is None:
+        return
+    target = "an axis"
+    if picked != PICK_AXIS:
+        origin, axis, target = picked
+        print("Turn arrows go around {}.".format(target))
         offset = rs.GetReal("Distance above the fitting's insertion point", defaults["rotate_offset"], 0.0)
         if offset is None:
             return
@@ -542,16 +738,18 @@ def rotate_arrow():
 
     plane = Rhino.Geometry.Plane(centre, axis)
     band = max(defaults["rotate_width"], float(radius) * 0.3)
-    sweep = defaults["rotate_sweep"]
+    starts = [0.0, 180.0] if defaults["double"] else [0.0]
+    sweep, lead = rotate_spans(defaults["rotate_sweep"], defaults["rotate_gap"], len(starts),
+                               float(radius), band)
     clockwise = turn.lower().startswith("t")       # right-hand thread tightens clockwise
     if clockwise:
         sweep = -sweep
-    starts = [0.0, 180.0] if defaults["double"] else [0.0]
+        lead = -lead
     layer_index = ensure_layer(ARROW_LAYER, EDGE_GREY)
     undo = sc.doc.BeginUndoRecord("Assembly rotate arrow")
     made = []
     for start in starts:
-        brep = rotate_arrow_brep(plane, float(radius), band, sweep, start + 15.0, defaults["thickness"])
+        brep = rotate_arrow_brep(plane, float(radius), band, sweep, start + lead, defaults["thickness"])
         if brep is not None:
             new_id = add_symbol(brep, layer_index, mode, "assembly rotate arrow")
             if new_id:
@@ -562,7 +760,8 @@ def rotate_arrow():
     if made:
         rs.UnselectAllObjects()
         rs.SelectObjects(made)
-        print("{} rotate arrow(s) added on '{}' ({}, radius {}).".format(len(made), ARROW_LAYER, turn.lower(), radius))
+        print("{} rotate arrow(s) added on '{}' around {} ({}, radius {}).".format(
+            len(made), ARROW_LAYER, target, turn.lower(), radius))
     else:
         rs.MessageBox("Could not build the rotate arrows.", 0, TITLE)
 

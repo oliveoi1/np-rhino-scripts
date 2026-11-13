@@ -315,7 +315,7 @@ Run tools from the **NP** launcher (`np_launcher.py`) or the **NPP** tool panel 
 
 ### 17 - Explode Fittings
 
-**What it does:** Pulls selected fitting blocks (screws, grub screws, cams, anything inserted with its axis on local Z) straight out of their face along that axis, for exploded assembly diagrams. Optionally draws a dashed leader from the exploded fitting back to the hole centre on the face.
+**What it does:** Pulls selected fitting blocks (screws, grub screws, cams, the table leg bolt and its nut, anything inserted with its axis on local Z) straight out of their face along that axis, for exploded assembly diagrams. Optionally draws a dashed leader from the exploded fitting back to the hole centre on the face.
 
 **Dimensions:** User-entered **distance** along the fitting axis (first-run default **2"**). Distance, Move/Copy and the leader choice are remembered in `_user_data/explode_fittings_defaults.json`.
 
@@ -422,10 +422,13 @@ Run tools from the **NP** launcher (`np_launcher.py`) or the **NPP** tool panel 
 **What it does:** Opens a list of hardware and marker blocks from `blocks/NP_Rhino_Hardware.3dm`. The point you pick is the block's saved insertion point (the end of the line in the library). Each block is placed on its layer: SKU insertion point on `NP-SKU_Insertion`, block insertion point on `NP-Setout`, markers on `NP-Construction - Setout`, fittings on `NP-Fittings`, logo blocks on `NP-Panel-Logo`. Fittings include four #8 wood screws: **1-1/4"** (two flat 3/4" plies, `screw_1-1-4in_pan` / `screw_1-1-4in_csk`) and **1-1/2"** (a piece screwed into another on edge, `screw_1-1-2in_pan` / `screw_1-1-2in_csk`), each as a **pan head** that sits proud or a **countersunk** head that finishes flush. The insertion point is the surface point in both cases (underside of a pan head, top of a countersunk head) and the shank points down -Z. Screws are inserted **perpendicular to the face under the picked point** (a flat face, a hole rim, or a hole centre, found within 1/2" of the pick, including faces inside block instances); with nothing under the point they insert upright on world Z.
 
 **Usage:**
+**Table leg bolt and nut (pick a hole):** places the table leg hardware in a hole you click instead of at a point. The bolt is `table_leg_bolt`, a **#10-32 x 1-3/4"** square drive (Robertson) round head machine screw, zinc (Fastenal **29895**); the nut is `table_leg_nut`, a **#10-32** nylon insert lock nut, **3/8"** hex x **1/4"** thick, zinc (Fastenal **37015**). Click a round hole **on the side the bolt head goes**: the bolt goes in on the hole's axis with the underside of its head on that face and the shank through the hole. With an object snap (Cen on the rim, Near) the hole end at the snapped point is used; with a free click it is the end facing you in that view, so click the side you can see. Holes are found inside block instances (a product, its panels) as well as in loose solids, whether the hole wall is one face or two halves; hidden parts and anything on `NP-Fittings` are ignored. **Nut=Yes/No** on the command line (click it or type `N`) switches the nut on or off and is remembered in `_user_data/insert_block_defaults.json`. The nut sits on the far face of the stack: the tool measures how far the hole runs through parts drilled in line (two **3/4"** plies give **1-1/2"**) and puts the nut where the hole comes out; when the hole does not come out (a blind hole, or the second ply is not drilled in the model) the nut goes **1-1/2"** from the head. The command line says what was measured, and warns when the hole is smaller than the bolt or the stack is thicker than **1-1/2"**. Both blocks follow the fitting convention (insertion point on the face, local +Z out of it), so **Explode Fittings** pulls the bolt out of one side and the nut out of the other, and the **Rotate arrow** and **bit call-out** in Assembly Symbols work on them.
+
 1. Choose **Insert Block**.
 2. Choose the item, for example **SKU Insertion Point**.
 3. Pick points. Press Enter when done.
 
+4. For **Table leg bolt and nut (pick a hole)**: set **Nut** to Yes or No, then click each hole on the side the head goes. Press Enter when done.
 **Requires:** `blocks/NP_Rhino_Hardware.3dm` next to the scripts.
 
 ---

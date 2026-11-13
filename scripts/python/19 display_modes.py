@@ -228,8 +228,11 @@ def mode_import_report(path):
     return ("File: {}\n({})\nRhino {} on {}.\n\n"
             "Tried it as saved, in other encodings, through IronPython and outside the undo record.\n"
             "Rhino 8 for Windows older than 8.13 has a bug here, so update Rhino first.\n"
-            "Then run Display Modes > Check display mode import and send the report.").format(
-                path, detail, Rhino.RhinoApp.Version, system)
+            "Then run Display Modes > Check display mode import and send the report.\n\n"
+            "To carry on now, import the modes by hand: Rhino Options (Settings on Mac) > View > "
+            "Display Modes > Import, and pick each .ini file in\n{}\n"
+            "The tools find the modes by name after that and stop trying to import them.").format(
+                path, detail, Rhino.RhinoApp.Version, system, os.path.dirname(path))
 
 
 def mode_files():

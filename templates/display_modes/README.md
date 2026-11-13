@@ -38,3 +38,10 @@ IronPython script, and with the script's undo record closed. If all fail, the me
 file, its first bytes and the Rhino version. **19 - Display Modes → Check display mode import
 (report)** tests each route on throwaway copies and writes the result to
 `_logs/display_mode_check.txt` and the clipboard; send that report along with the problem.
+
+**To carry on without waiting for a fix, import the modes by hand.** In Rhino open Options
+(Settings on Mac) > View > Display Modes, press Import, and pick each `.ini` file in this folder
+(on a team install: `Documents/NP Rhino Scripts/templates/display_modes`). There are seven: `NP
+Assembly` and its six colours. Once they are in the display mode list the tools find them by name
+and no longer try to import anything. If Rhino's own Import refuses the files too, say so with the
+report: that points at the files, not at the script.

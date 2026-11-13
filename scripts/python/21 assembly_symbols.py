@@ -23,8 +23,10 @@ the NP Assembly look (which paints everything else off-white):
                         or Enter to fit it under everything in view.
                         Layer NP-Assembly - Blanket, mode NP Assembly - Blanket.
   Tool call-out         a flat icon facing the camera, placed at a picked
-                        point: glue bottle, screwdriver bit, rubber mallet,
-                        hammer, green tick or red cross. Grey parts use
+                        point: glue bottle, screwdriver bit (Phillips or
+                        Robertson; click a screw or cam and the bit stands
+                        out along its axis), rubber mallet, hammer, green
+                        tick or red cross. Grey parts use
                         NP Assembly - Fittings, the bottle NP Assembly - Glue,
                         the tick NP Assembly - Arrows, the cross
                         NP Assembly - Cross, white parts the base look.
@@ -66,7 +68,8 @@ ROTATE_LABEL = "Rotate arrow (screw)"
 GLUE_LABEL = "Glue bead"
 TOOL_LABEL = "Tool call-out"
 BLANKET_LABEL = "Moving blanket"
-ICONS = ["GlueBottle", "Bit", "Mallet", "Hammer", "Tick", "Cross"]
+ICONS = ["GlueBottle", "PhillipsBit", "RobertsonBit", "Mallet", "Hammer", "Tick", "Cross"]
+BIT_DRIVES = {"PhillipsBit": "Phillips", "RobertsonBit": "Robertson"}   # icon -> screw drive
 
 DEFAULTS_FILENAME = "assembly_symbols_defaults.json"
 FALLBACK = {
@@ -83,7 +86,8 @@ FALLBACK = {
     "double": True,          # two curved arrows (the "turn" symbol)
     "glue_diameter": 0.1875,
     "icon_size": 2.0,        # overall height of a tool call-out icon
-    "icon": "Bit",
+    "icon": "PhillipsBit",
+    "bit_offset": 1.0,       # bit tip above a clicked fitting's insertion point
     "blanket_margin": 6.0,   # blanket overhang around the parts when auto-fitted
     "blanket_thickness": 0.25,
     "quilt_spacing": 4.0,    # diamond quilt lines; 0 for a plain blanket
@@ -693,12 +697,12 @@ def pick_ray(getter, objref):
     return None, None
 
 
-def pick_fitting():
-    """Ask for the screw or fitting to turn. Returns (origin, axis, description),
-    PICK_AXIS when the user pressed Enter to pick an axis by hand, or None on
+def pick_fitting(prompt="Click the screw, cam or fitting to turn (Enter to pick an axis instead)",
+                 by_hand="Enter to pick an axis instead"):
+    """Ask for a screw or fitting. Returns (origin, axis, description),
+    PICK_AXIS when the user pressed Enter to place things by hand, or None on
     cancel. A click on a fitting nested inside a panel or product block (cam,
     grub screw, screw) gives that fitting, not the block around it."""
-    prompt = "Click the screw, cam or fitting to turn (Enter to pick an axis instead)"
     preselect = True
     while True:
         getter = Rhino.Input.Custom.GetObject()
@@ -721,7 +725,7 @@ def pick_fitting():
             # A selected panel says nothing about which of its fittings is meant.
             sc.doc.Objects.UnselectAll()
             sc.doc.Views.Redraw()
-            prompt = "Click the fitting inside '{}' (Enter to pick an axis instead)".format(name)
+            prompt = "Click the fitting inside '{}' ({})".format(name, by_hand)
             preselect = False
             continue
         ray, point = pick_ray(getter, objref)
@@ -1060,6 +1064,25 @@ def aimed_plane(plane, size, name, toward):
     return Rhino.Geometry.Plane(origin, x_axis, y_axis)
 
 
+def axis_plane(tip, axis, size, name):
+    """Plane for an icon whose working end sits on `tip` and whose body runs out
+    along the unit vector `axis` (a fitting's axis, out of the face it sits in).
+    The flat face is turned toward the camera as far as the axis allows. Returns
+    None when the axis points straight at the camera, where a flat icon along it
+    could only be seen edge on."""
+    anchor, back = ICON_AIM[name][0], ICON_AIM[name][1]
+    toward_viewer = -camera_direction()
+    normal = toward_viewer - axis * (toward_viewer * axis)
+    if normal.Length < 0.05 or not normal.Unitize():
+        return None
+    across = Rhino.Geometry.Vector3d.CrossProduct(normal, axis)
+    angle = math.atan2(back[1] - anchor[1], back[0] - anchor[0])
+    x_axis = axis * math.cos(angle) - across * math.sin(angle)
+    y_axis = axis * math.sin(angle) + across * math.cos(angle)
+    origin = tip - x_axis * (anchor[0] * size) - y_axis * (anchor[1] * size)
+    return Rhino.Geometry.Plane(origin, x_axis, y_axis)
+
+
 def anchored_plane(plane, size, name):
     """`plane` shifted so the working end of the icon, in its standard
     orientation, sits on the plane origin."""
@@ -1072,9 +1095,18 @@ def anchored_plane(plane, size, name):
     return Rhino.Geometry.Plane(origin, plane.XAxis, plane.YAxis)
 
 
-def icon_pieces(name, plane, size, aimed=False):
+def icon_shape(icon):
+    """(shape drawn, screw drive or None) for an entry of ICONS."""
+    if icon in BIT_DRIVES:
+        return "Bit", BIT_DRIVES[icon]
+    return icon, None
+
+
+def icon_pieces(name, plane, size, aimed=False, drive="Phillips"):
     """(curves, style, lift) pieces of the named icon, world space, height `size`.
-    `aimed` = the plane is already turned to the wanted direction (aimed_plane)."""
+    `aimed` = the plane is already turned to the wanted direction (aimed_plane).
+    `drive` picks the bit and the screw head drawn beside it: Phillips (cross)
+    or Robertson (square)."""
     pieces = []
     if name == "GlueBottle" and aimed:
         pieces.append(([local_curve(plane, size, rect(-0.22, -0.5, 0.22, 0.05), 0.05)], "glue", 0))
@@ -1096,10 +1128,15 @@ def icon_pieces(name, plane, size, aimed=False):
         pieces.append(([local_curve(plane, size, drop(tip_x + 0.1, tip_y - 0.05, 0.06))], "glue", 0))
     elif name == "Bit":
         pieces.append(([local_curve(plane, size, rect(-0.11, -0.05, 0.11, 0.5))], "grey", 0))
-        pieces.append(([local_curve(plane, size, [(-0.11, -0.05), (0.11, -0.05), (0.03, -0.5), (-0.03, -0.5)])], "grey", 0))
+        point = 0.06 if drive == "Robertson" else 0.03      # a square bit ends blunter
+        pieces.append(([local_curve(plane, size, [(-0.11, -0.05), (0.11, -0.05), (point, -0.5), (-point, -0.5)])], "grey", 0))
+        # the screw head seen end on, beside the shank
         pieces.append(([local_circle(plane, size, (0.45, 0.28), 0.19)], "white", 0))
-        pieces.append(([local_curve(plane, size, rect(0.45 - 0.14, 0.28 - 0.025, 0.45 + 0.14, 0.28 + 0.025))], "grey", 1))
-        pieces.append(([local_curve(plane, size, rect(0.45 - 0.025, 0.28 - 0.14, 0.45 + 0.025, 0.28 + 0.14))], "grey", 1))
+        if drive == "Robertson":
+            pieces.append(([local_curve(plane, size, rect(0.45 - 0.085, 0.28 - 0.085, 0.45 + 0.085, 0.28 + 0.085))], "grey", 1))
+        else:
+            pieces.append(([local_curve(plane, size, rect(0.45 - 0.14, 0.28 - 0.025, 0.45 + 0.14, 0.28 + 0.025))], "grey", 1))
+            pieces.append(([local_curve(plane, size, rect(0.45 - 0.025, 0.28 - 0.14, 0.45 + 0.025, 0.28 + 0.14))], "grey", 1))
     elif name == "Mallet":
         pieces.append(([local_curve(plane, size, rect(-0.3, 0.15, 0.3, 0.5), 0.04)], "grey", 0))
         pieces.append(([local_curve(plane, size, rect(-0.42, 0.15, -0.3, 0.5), 0.04)], "white", 0))
@@ -1127,7 +1164,8 @@ def tool_callout():
     if None in (grey, glue, green, red):
         return
     defaults = load_defaults()
-    default_icon = defaults["icon"] if defaults["icon"] in ICONS else ICONS[0]
+    saved_icon = "PhillipsBit" if defaults["icon"] == "Bit" else defaults["icon"]   # "Bit" = before the drives
+    default_icon = saved_icon if saved_icon in ICONS else ICONS[0]
     icon = rs.GetString("Tool call-out", default_icon, ICONS)
     if not icon:
         return
@@ -1135,13 +1173,29 @@ def tool_callout():
     if not icon:
         return
     icon = icon[0]
-    aim = ICON_AIM.get(icon)
-    centre = rs.GetPoint(aim[2] if aim else "Centre of the {} icon".format(icon))
-    if centre is None:
-        return
+    shape, drive = icon_shape(icon)
+    aim = ICON_AIM.get(shape)
+    fitting = None
+    centre = None
     toward = None
-    if aim:
-        toward = rs.GetPoint(aim[3] + " (Enter for the standard orientation)", centre)
+    if shape == "Bit":
+        picked = pick_fitting("Click the screw or cam the bit drives (Enter to place the bit by hand)",
+                              "Enter to place the bit by hand")
+        if picked is None:
+            return
+        if picked != PICK_AXIS:
+            fitting = picked
+            offset = rs.GetReal("Distance from the fitting to the bit tip", defaults["bit_offset"], 0.0)
+            if offset is None:
+                return
+            defaults["bit_offset"] = float(offset)
+            centre = fitting[0] + fitting[1] * float(offset)
+    if fitting is None:
+        centre = rs.GetPoint(aim[2] if aim else "Centre of the {} icon".format(icon))
+        if centre is None:
+            return
+        if aim:
+            toward = rs.GetPoint(aim[3] + " (Enter for the standard orientation)", centre)
     size = rs.GetReal("Icon height", defaults["icon_size"], 0.01)
     if size is None:
         return
@@ -1151,18 +1205,28 @@ def tool_callout():
 
     plane = screen_plane(centre)
     aimed = False
-    if aim:
-        turned = aimed_plane(plane, float(size), icon, toward) if toward is not None else None
+    note = ""
+    if fitting is not None:
+        along = axis_plane(centre, fitting[1], float(size), shape)
+        if along is not None:
+            plane, aimed = along, True
+            note = " It stands out along the axis of {}.".format(fitting[2])
+        else:
+            plane = anchored_plane(plane, float(size), shape)
+            note = (" {} points straight at the camera, so the bit is drawn in its standard "
+                    "orientation; orbit a little and place it again to see it along the axis.".format(fitting[2]))
+    elif aim:
+        turned = aimed_plane(plane, float(size), shape, toward) if toward is not None else None
         if turned is not None:
             plane, aimed = turned, True
         else:
-            plane = anchored_plane(plane, float(size), icon)
+            plane = anchored_plane(plane, float(size), shape)
     layer_index = ensure_layer(ICON_LAYER, EDGE_GREY)
     modes = {"grey": grey, "glue": glue, "green": green, "red": red, "white": None}
     thickness = defaults["thickness"]
     undo = sc.doc.BeginUndoRecord("Assembly tool call-out")
     made = []
-    for curves, style, lift in icon_pieces(icon, plane, float(size), aimed):
+    for curves, style, lift in icon_pieces(shape, plane, float(size), aimed, drive or "Phillips"):
         brep = flat_piece(plane, curves, thickness, lift)
         if brep is None:
             continue
@@ -1178,7 +1242,7 @@ def tool_callout():
     if made:
         rs.UnselectAllObjects()
         rs.SelectObjects(made)
-        print("{} icon added on '{}' ({} pieces, height {}), grouped.".format(icon, ICON_LAYER, len(made), size))
+        print("{} icon added on '{}' ({} pieces, height {}), grouped.{}".format(icon, ICON_LAYER, len(made), size, note))
     else:
         rs.MessageBox("Could not build the {} icon.".format(icon), 0, TITLE)
 

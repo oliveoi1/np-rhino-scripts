@@ -40,11 +40,14 @@ for the pictures.
      inside a panel block: click the fitting itself, not the bare panel.
    - **Glue bead**: select a curve or click along the joint; a pale yellow bead with
      round ends, on its own layer `NP-Assembly - Glue`.
-   - **Tool call-out**: a flat icon: glue bottle, screwdriver bit, rubber mallet,
-     hammer, green tick or red cross. For the four tools, click where the tip (or the
-     striking face) goes, then click where the body or handle should lie, and the
-     icon turns to match; Enter instead of the second click gives the standard
-     orientation. Each is one group; scale or move it like any object.
+   - **Tool call-out**: a flat icon: glue bottle, screwdriver bit (`PhillipsBit` or
+     `RobertsonBit`), rubber mallet, hammer, green tick or red cross. For a bit, click
+     the screw or cam it drives and the bit stands straight out from it, with the
+     screw head symbol beside it. For the other tools (or a bit after Enter), click
+     where the tip or the striking face goes, then click where the body or handle
+     should lie, and the icon turns to match; Enter instead of the second click
+     gives the standard orientation. Each is one group; scale or move it like any
+     object.
    - **Moving blanket**: for the "clean surface" step. Press Enter to fit it under
      everything in view, or click two corners. Dark blue with a quilt pattern.
    Put step numbers in with `TextDot` or the annotation styles from

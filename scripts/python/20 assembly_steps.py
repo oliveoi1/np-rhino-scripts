@@ -215,13 +215,36 @@ def mode_file_id(path):
         return None
 
 
+def listed_mode(mode_id):
+    """The display mode with this id as Rhino lists it (the list behind the
+    viewport's display mode menu), or None.
+
+    Asking Rhino for a mode by id is not enough: Rhino for Windows can hold an
+    imported mode that it hands out by id yet neither lists nor shows, and a
+    viewport set to such a mode falls back to Wireframe."""
+    if mode_id is None or mode_id == System.Guid.Empty:
+        return None
+    for mode in Rhino.Display.DisplayModeDescription.GetDisplayModes():
+        if mode.Id == mode_id:
+            return mode
+    return None
+
+
+def held_mode(mode_id):
+    """The mode Rhino hands out for this id, listed or not; None when it has none."""
+    if mode_id is None or mode_id == System.Guid.Empty:
+        return None
+    try:
+        return Rhino.Display.DisplayModeDescription.GetDisplayMode(mode_id)
+    except Exception:
+        return None
+
+
 def imported_mode(path, returned_id=None):
-    """The display mode this Rhino has for the file `path`: looked up by the id
-    the import returned, else by the id in the file. None when it is not there."""
+    """The display mode this Rhino lists for the file `path`: looked up by the id
+    the import returned, else by the id in the file. None when it is not listed."""
     for mode_id in (returned_id, mode_file_id(path)):
-        if mode_id is None or mode_id == System.Guid.Empty:
-            continue
-        mode = Rhino.Display.DisplayModeDescription.GetDisplayMode(mode_id)
+        mode = listed_mode(mode_id)
         if mode is not None:
             return mode
     return None
@@ -294,11 +317,47 @@ def import_outside_undo(path):
     return import_direct(path)
 
 
+def import_without_undo(path):
+    """Imports with the document's undo recording switched off."""
+    try:
+        before = sc.doc.UndoRecordingEnabled
+        sc.doc.UndoRecordingEnabled = False
+    except Exception:
+        return None
+    try:
+        return import_direct(path)
+    finally:
+        try:
+            sc.doc.UndoRecordingEnabled = before
+        except Exception:
+            pass
+
+
+def import_then_update(path):
+    """Imports, then tells Rhino the mode has changed: a mode Rhino holds without
+    listing it may be registered properly by that."""
+    try:
+        mode_id = Rhino.Display.DisplayModeDescription.ImportFromFile(path)
+    except Exception:
+        mode_id = None
+    for candidate in (mode_id, mode_file_id(path)):
+        held = held_mode(candidate)
+        if held is None:
+            continue
+        try:
+            Rhino.Display.DisplayModeDescription.UpdateDisplayMode(held)
+        except Exception:
+            pass
+    return imported_mode(path, mode_id)
+
+
 IMPORT_ROUTES = [
     ("as saved", import_direct),
     ("re-saved in another encoding", import_reencoded),
     ("through IronPython", import_with_ironpython),
     ("with the script's undo record closed", import_outside_undo),
+    ("with undo recording switched off", import_without_undo),
+    ("followed by an update of the mode", import_then_update),
 ]
 
 
@@ -324,7 +383,8 @@ def mode_import_report(path):
         detail = "could not be read: {}".format(ex)
     system = "Windows" if Rhino.Runtime.HostUtils.RunningOnWindows else "Mac"
     return ("File: {}\n({})\nRhino {} on {}.\n\n"
-            "Tried it as saved, in other encodings, through IronPython and outside the undo record.\n"
+            "Tried it as saved, in other encodings, through IronPython, outside the undo record,\n"
+            "with undo off and with an update afterwards; Rhino did not list the mode after any.\n"
             "Rhino 8 for Windows older than 8.13 has a bug here, so update Rhino first.\n"
             "Then run Display Modes > Check display mode import and send the report.\n\n"
             "To carry on now, import the modes by hand: Rhino Options (Settings on Mac) > View > "
@@ -366,6 +426,63 @@ def viewport_to_base_mode(base):
     if view.ActiveViewport.DisplayMode.Id != base.Id:
         view.ActiveViewport.DisplayMode = base
         view.Redraw()
+
+
+# Rhino for Windows has dropped the imported modes in the middle of a session:
+# the viewport falls to Wireframe and the modes leave the display mode menu,
+# sometimes while Capture step is running. The tools therefore look again at
+# the points where that would spoil a picture, bring back what is gone, and note
+# when it happened so the cause can be found.
+
+MODE_LOG = "assembly_modes.log"
+
+
+def missing_modes():
+    """Team mode files (NP Assembly and its colours) this Rhino has no mode for."""
+    if not os.path.isdir(MODES_FOLDER):
+        return []
+    gone = []
+    for filename in sorted(os.listdir(MODES_FOLDER)):
+        if not filename.lower().endswith(".ini") or not filename.startswith(BASE_MODE):
+            continue
+        path = os.path.join(MODES_FOLDER, filename)
+        if imported_mode(path) is None:
+            gone.append(path)
+    return gone
+
+
+def log_mode_loss(text):
+    try:
+        import datetime
+        folder = os.path.join(_INSTALL_ROOT, "_logs")
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+        system = "Windows" if Rhino.Runtime.HostUtils.RunningOnWindows else "Mac"
+        with open(os.path.join(folder, MODE_LOG), "a") as handle:
+            handle.write("{} | Rhino {} {} | {}\n".format(
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), Rhino.RhinoApp.Version, system, text))
+    except Exception:
+        pass
+
+
+def heal_modes(stage):
+    """Re-imports the team modes that have gone missing and puts the active view
+    back in the base look. `stage` says what had just happened, for the log.
+    Returns the names that had gone."""
+    gone = missing_modes()
+    if not gone:
+        return []
+    names = [os.path.splitext(os.path.basename(path))[0] for path in gone]
+    for path in gone:
+        import_mode_file(path)
+    still = [os.path.splitext(os.path.basename(path))[0] for path in missing_modes()]
+    viewport_to_base_mode(find_mode(BASE_MODE))
+    text = "display modes gone after {}: {}; {}".format(
+        stage, ", ".join(names),
+        "could not bring back " + ", ".join(still) if still else "all brought back")
+    log_mode_loss(text)
+    print("NP Assembly: {} (noted in _logs/{}).".format(text, MODE_LOG))
+    return names
 
 
 def ensure_layer(name, color):
@@ -1002,6 +1119,7 @@ def capture_view(view, scale):
     vc.TransparentBackground = False
 
     def grab():
+        heal_modes("setting the line weights for the capture")
         sc.doc.Views.Redraw()
         Rhino.RhinoApp.Wait()
         # the first captures after a display mode change can show the old state
@@ -1057,6 +1175,7 @@ def capture():
     save_defaults({"scale": int(scale)})
 
     view = sc.doc.Views.ActiveView
+    heal_modes("the capture prompts")
     viewport_to_base_mode(base)
     _, cplane_note = shared_cplane(view.ActiveViewport)
     rs.EnableRedraw(False)
@@ -1067,7 +1186,9 @@ def capture():
         if undo:
             sc.doc.EndUndoRecord(undo)
         rs.EnableRedraw(True)
+    heal_modes("saving the step snapshot")
     bitmap, width, height = with_grey_fittings(lambda: capture_view(view, int(scale)))
+    heal_modes("taking the picture")
     if bitmap is None:
         rs.MessageBox("The viewport capture failed.", 0, TITLE)
         return
@@ -1177,6 +1298,7 @@ def recapture_all():
                     print("{}: CPlane set to the shared one, snapshot updated.".format(name))
                 else:
                     problems.append("{}: snapshot could not be saved with the shared CPlane".format(name))
+            heal_modes("restoring '{}'".format(name))
             bitmap, width, height = with_grey_fittings(lambda: capture_view(view, int(scale)))
             if bitmap is None:
                 problems.append("{}: capture failed".format(name))

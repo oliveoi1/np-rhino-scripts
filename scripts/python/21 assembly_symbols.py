@@ -212,13 +212,36 @@ def mode_file_id(path):
         return None
 
 
+def listed_mode(mode_id):
+    """The display mode with this id as Rhino lists it (the list behind the
+    viewport's display mode menu), or None.
+
+    Asking Rhino for a mode by id is not enough: Rhino for Windows can hold an
+    imported mode that it hands out by id yet neither lists nor shows, and a
+    viewport set to such a mode falls back to Wireframe."""
+    if mode_id is None or mode_id == System.Guid.Empty:
+        return None
+    for mode in Rhino.Display.DisplayModeDescription.GetDisplayModes():
+        if mode.Id == mode_id:
+            return mode
+    return None
+
+
+def held_mode(mode_id):
+    """The mode Rhino hands out for this id, listed or not; None when it has none."""
+    if mode_id is None or mode_id == System.Guid.Empty:
+        return None
+    try:
+        return Rhino.Display.DisplayModeDescription.GetDisplayMode(mode_id)
+    except Exception:
+        return None
+
+
 def imported_mode(path, returned_id=None):
-    """The display mode this Rhino has for the file `path`: looked up by the id
-    the import returned, else by the id in the file. None when it is not there."""
+    """The display mode this Rhino lists for the file `path`: looked up by the id
+    the import returned, else by the id in the file. None when it is not listed."""
     for mode_id in (returned_id, mode_file_id(path)):
-        if mode_id is None or mode_id == System.Guid.Empty:
-            continue
-        mode = Rhino.Display.DisplayModeDescription.GetDisplayMode(mode_id)
+        mode = listed_mode(mode_id)
         if mode is not None:
             return mode
     return None
@@ -291,11 +314,47 @@ def import_outside_undo(path):
     return import_direct(path)
 
 
+def import_without_undo(path):
+    """Imports with the document's undo recording switched off."""
+    try:
+        before = sc.doc.UndoRecordingEnabled
+        sc.doc.UndoRecordingEnabled = False
+    except Exception:
+        return None
+    try:
+        return import_direct(path)
+    finally:
+        try:
+            sc.doc.UndoRecordingEnabled = before
+        except Exception:
+            pass
+
+
+def import_then_update(path):
+    """Imports, then tells Rhino the mode has changed: a mode Rhino holds without
+    listing it may be registered properly by that."""
+    try:
+        mode_id = Rhino.Display.DisplayModeDescription.ImportFromFile(path)
+    except Exception:
+        mode_id = None
+    for candidate in (mode_id, mode_file_id(path)):
+        held = held_mode(candidate)
+        if held is None:
+            continue
+        try:
+            Rhino.Display.DisplayModeDescription.UpdateDisplayMode(held)
+        except Exception:
+            pass
+    return imported_mode(path, mode_id)
+
+
 IMPORT_ROUTES = [
     ("as saved", import_direct),
     ("re-saved in another encoding", import_reencoded),
     ("through IronPython", import_with_ironpython),
     ("with the script's undo record closed", import_outside_undo),
+    ("with undo recording switched off", import_without_undo),
+    ("followed by an update of the mode", import_then_update),
 ]
 
 
@@ -321,7 +380,8 @@ def mode_import_report(path):
         detail = "could not be read: {}".format(ex)
     system = "Windows" if Rhino.Runtime.HostUtils.RunningOnWindows else "Mac"
     return ("File: {}\n({})\nRhino {} on {}.\n\n"
-            "Tried it as saved, in other encodings, through IronPython and outside the undo record.\n"
+            "Tried it as saved, in other encodings, through IronPython, outside the undo record,\n"
+            "with undo off and with an update afterwards; Rhino did not list the mode after any.\n"
             "Rhino 8 for Windows older than 8.13 has a bug here, so update Rhino first.\n"
             "Then run Display Modes > Check display mode import and send the report.\n\n"
             "To carry on now, import the modes by hand: Rhino Options (Settings on Mac) > View > "

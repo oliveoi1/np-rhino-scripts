@@ -23,7 +23,6 @@ CIRCUMFERENCE_TOL = 0.15
 FACE_PERP_WEIGHT = 12.0
 MAX_FACE_PERP = 0.75
 
-BLOCK_ANGLE_OFFSET = 180.0
 DELETE_SOURCE = False
 
 
@@ -139,14 +138,6 @@ def dominant_open_edge(center, bbox):
     }
 
     return min(dists, key=dists.get)
-
-
-def pocket_interior_point(bbox):
-    if not bbox:
-        return None
-
-    minx, maxx, miny, maxy = bbox
-    return ((minx + maxx) / 2.0, (miny + maxy) / 2.0, 0.0)
 
 
 def approach_matches_edge(center, pt_on, edge_name):
@@ -373,36 +364,7 @@ def nearest_touching_curve_direction(circle_id, center, radius, all_curve_ids):
     if not best_pt_on_edge:
         return None, None
 
-    return angle_from_pts(best_pt_on_edge, center), best_pt_on_edge
-
-
-def outward_angle_at_wall_hit(center, cid, param, pt_on, interior_pt):
-    cx, cy = xy_tuple(center)
-    px, py = xy_tuple(pt_on)
-
-    to_wall = (px - cx, py - cy)
-
-    tangent_xy = curve_tangent_xy(cid, param)
-    t = unit_xy(tangent_xy)
-
-    if t and interior_pt:
-        n1 = (-t[1], t[0])
-        n2 = (t[1], -t[0])
-
-        ix, iy = xy_tuple(interior_pt)
-        ext = (px - ix, py - iy)
-
-        if n1[0] * ext[0] + n1[1] * ext[1] >= n2[0] * ext[0] + n2[1] * ext[1]:
-            n = n1
-        else:
-            n = n2
-
-        if n[0] * to_wall[0] + n[1] * to_wall[1] < 0:
-            n = (-n[0], -n[1])
-
-        return math.degrees(math.atan2(n[1], n[0]))
-
-    return angle_from_pts(center, pt_on)
+    return angle_from_pts(center, best_pt_on_edge), best_pt_on_edge
 
 
 def nearest_wall_direction(center, circle_id, all_curve_ids, circle_ids=None):
@@ -410,7 +372,6 @@ def nearest_wall_direction(center, circle_id, all_curve_ids, circle_ids=None):
 
     bbox = pocket_outline_bbox(all_curve_ids, circle_ids)
     edge_name = dominant_open_edge(center, bbox)
-    interior_pt = pocket_interior_point(bbox)
 
     def make_hit(cid, param, pt_on, max_perp):
         d = point_distance(center, pt_on)
@@ -463,66 +424,13 @@ def nearest_wall_direction(center, circle_id, all_curve_ids, circle_ids=None):
     if best is None:
         return None, None
 
-    score, best_cid, best_param, best_pt = best
+    best_pt = best[3]
 
-    angle = outward_angle_at_wall_hit(
-        center,
-        best_cid,
-        best_param,
-        best_pt,
-        interior_pt
-    )
-
-    return angle, best_pt
-
-
-def facing_vector(rotation_deg, block_offset_deg):
-    rad = math.radians(rotation_deg + block_offset_deg)
-    return (math.cos(rad), math.sin(rad))
-
-
-def pick_rotation_toward_target(center, aim_angle, aim_point):
-    if aim_point is None:
-        return normalize_angle(aim_angle + BLOCK_ANGLE_OFFSET)
-
-    cx, cy = xy_tuple(center)
-    tx, ty = xy_tuple(aim_point)
-
-    vx = tx - cx
-    vy = ty - cy
-
-    vlen = math.hypot(vx, vy)
-
-    if vlen < 1e-9:
-        return normalize_angle(aim_angle + BLOCK_ANGLE_OFFSET)
-
-    vx /= vlen
-    vy /= vlen
-
-    best_rot = None
-    best_dot = -999999.0
-
-    for rot in (
-        normalize_angle(aim_angle + BLOCK_ANGLE_OFFSET),
-        normalize_angle(aim_angle + BLOCK_ANGLE_OFFSET + 180.0)
-    ):
-        fx, fy = facing_vector(rot, 0.0)
-        dot = fx * vx + fy * vy
-
-        if dot > best_dot:
-            best_dot = dot
-            best_rot = rot
-
-    return normalize_angle(best_rot)
+    return angle_from_pts(center, best_pt), best_pt
 
 
 def final_cam_angle(base_dir, symbol_type, center=None, aim_point=None):
-    if symbol_type == "edge_touch":
-        aim_angle = normalize_angle(base_dir + 180.0)
-    else:
-        aim_angle = normalize_angle(base_dir)
-
-    return pick_rotation_toward_target(center, aim_angle, aim_point)
+    return normalize_angle(base_dir + 180.0)
 
 
 def insert_oriented_block(block_name, insert_pt, angle_deg, layer_name):
@@ -531,7 +439,13 @@ def insert_oriented_block(block_name, insert_pt, angle_deg, layer_name):
     if not new_id:
         return None
 
-    rs.RotateObject(new_id, insert_pt, angle_deg)
+    rs.RotateObject(
+        new_id,
+        insert_pt,
+        angle_deg,
+        axis=(0, 0, 1)
+    )
+
     rs.ObjectLayer(new_id, layer_name)
 
     return new_id
@@ -659,6 +573,12 @@ def main():
                 center=center,
                 aim_point=aim_point
             )
+
+            # Debug (uncomment for rotation troubleshooting):
+            # print("CENTER:", center)
+            # print("AIM POINT:", aim_point)
+            # print("BASE DIR:", base_dir)
+            # print("FINAL ANGLE:", final_angle)
 
             new_id = insert_oriented_block(
                 BLOCK_NAME,

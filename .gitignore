@@ -9,3 +9,10 @@ _staging/
 .specstory/
 .vscode/
 .cursorindexingignore
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Rendered images (large; kept on disk, not in the repo)
+renders/

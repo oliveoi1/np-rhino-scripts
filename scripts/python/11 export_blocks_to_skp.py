@@ -11,7 +11,7 @@ import rhinoscriptsyntax as rs
 
 
 def clean_block_name(name):
-    """Same rules as 08b create_block.py for filesystem-safe names."""
+    """Same rules as create_or_redefine_block.py for filesystem-safe names."""
     if not name:
         return None
 

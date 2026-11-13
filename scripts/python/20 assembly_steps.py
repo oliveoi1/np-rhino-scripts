@@ -31,8 +31,12 @@ Re-capture replays every step snapshot into fresh PNGs, for when the
            assembly changes.
 
 Both modes are imported from the team folder the first time they are needed.
+
+Instructions opens the manual, templates/NP Assembly Instructions.md, as a page
+in the web browser.
 """
 
+import html
 import json
 import math
 import os
@@ -73,6 +77,7 @@ SYMBOLS_SUFFIX = " symbols"                  # "<step name> symbols" -> ids of t
 STAGE_VIEW = "NP Assembly stage"             # named view: the camera Copy stage left on the newest stage
 CPLANE_KEY = "cplane"                        # the construction plane every step shares: origin;x axis;y axis
 
+INSTRUCTIONS_LABEL = "Instructions"
 HIGHLIGHT_LABEL = "Highlight selected piece"
 CLEAR_LABEL = "Clear highlight"
 CAPTURE_LABEL = "Capture step"
@@ -119,7 +124,7 @@ def take_menu_choice(valid_choices):
 
 def menu_items():
     """Choices offered by the list dialog and by the NP Menu drawer."""
-    return [HIGHLIGHT_LABEL, CLEAR_LABEL, CAPTURE_LABEL, RESTORE_LABEL, RECAPTURE_LABEL,
+    return [INSTRUCTIONS_LABEL, HIGHLIGHT_LABEL, CLEAR_LABEL, CAPTURE_LABEL, RESTORE_LABEL, RECAPTURE_LABEL,
             COPY_STAGE_LABEL, STAGE_VIEW_LABEL, SHOW_SYMBOLS_LABEL, SET_CPLANE_LABEL]
 
 
@@ -1566,6 +1571,183 @@ def copy_stage():
           "Highlight the next piece and Capture step as usual.".format(len(new_ids), distance, direction.lower(), note))
 
 
+# --- instructions -----------------------------------------------------------------
+#
+# The manual is templates/NP Assembly Instructions.md. Instructions turns it into a
+# web page in _user_data and opens that in the browser, so it reads as a page, not
+# as Markdown source, on any machine.
+
+MANUAL_FILE = os.path.join("templates", "NP Assembly Instructions.md")
+MANUAL_PAGE = "NP Assembly Instructions.html"
+MANUAL_ITEM = re.compile(r"^(\s*)(\d+\.|-)\s+(.*)$")
+MANUAL_HEADING = re.compile(r"^(#{1,3})\s+(.*)$")
+MANUAL_STYLE = """
+body { font: 15px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #222;
+       max-width: 820px; margin: 2em auto; padding: 0 1.2em 4em; }
+h1 { font-size: 1.7em; margin-bottom: 0.2em; }
+h2 { font-size: 1.25em; margin-top: 2em; padding-top: 0.6em; border-top: 2px solid #e8803a; }
+h3 { font-size: 1.05em; margin-top: 1.5em; }
+code { background: #f1efe9; padding: 0.05em 0.3em; border-radius: 3px; font-size: 0.92em; }
+li { margin: 0.35em 0; }
+li > p { margin: 0.2em 0; }
+table { border-collapse: collapse; margin: 1em 0; font-size: 0.95em; }
+th, td { border: 1px solid #cfcabd; padding: 0.4em 0.6em; vertical-align: top; text-align: left; }
+th { background: #f1efe9; }
+.source { color: #777; font-size: 0.85em; margin-top: 3em; }
+"""
+
+
+def manual_inline(text):
+    """Bold and code spans of one piece of manual text, as HTML."""
+    text = html.escape(text, quote=False)
+    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+    return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+
+
+def manual_table(rows):
+    out = ["<table>"]
+    for index, row in enumerate(rows):
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+        if index == 1 and all(set(cell) <= set("-: ") for cell in cells):
+            continue
+        tag = "th" if index == 0 else "td"
+        out.append("<tr>" + "".join("<{0}>{1}</{0}>".format(tag, manual_inline(cell)) for cell in cells) + "</tr>")
+    out.append("</table>")
+    return "\n".join(out)
+
+
+def manual_blocks(lines):
+    """The manual's Markdown (headings, paragraphs, nested lists, tables) as HTML.
+    It covers what the manual uses, not Markdown as a whole."""
+    def indent_of(line):
+        return len(line) - len(line.lstrip())
+
+    out = []
+    i, count = 0, len(lines)
+    while i < count:
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        heading = MANUAL_HEADING.match(line)
+        if heading:
+            level = len(heading.group(1))
+            out.append("<h{0}>{1}</h{0}>".format(level, manual_inline(heading.group(2))))
+            i += 1
+            continue
+        if line.lstrip().startswith("|"):
+            rows = []
+            while i < count and lines[i].lstrip().startswith("|"):
+                rows.append(lines[i])
+                i += 1
+            out.append(manual_table(rows))
+            continue
+        item = MANUAL_ITEM.match(line)
+        if item:
+            indent, ordered = len(item.group(1)), item.group(2) != "-"
+            out.append("<ol>" if ordered else "<ul>")
+            while i < count:
+                item = MANUAL_ITEM.match(lines[i])
+                if not item or len(item.group(1)) != indent or (item.group(2) != "-") != ordered:
+                    break
+                body = [item.group(3)]
+                i += 1
+                while i < count:
+                    if lines[i].strip():
+                        if indent_of(lines[i]) <= indent:
+                            break
+                        body.append(lines[i])
+                        i += 1
+                        continue
+                    ahead = i
+                    while ahead < count and not lines[ahead].strip():
+                        ahead += 1
+                    if ahead < count and indent_of(lines[ahead]) > indent:
+                        body.append("")
+                        i += 1
+                        continue
+                    break
+                rest = [text for text in body[1:] if text.strip()]
+                trim = min(indent_of(text) for text in rest) if rest else 0
+                out.append("<li>" + manual_blocks([body[0]] + [text[trim:] for text in body[1:]]) + "</li>")
+                ahead = i
+                while ahead < count and not lines[ahead].strip():
+                    ahead += 1
+                if ahead < count:
+                    following = MANUAL_ITEM.match(lines[ahead])
+                    if following and len(following.group(1)) == indent and (following.group(2) != "-") == ordered:
+                        i = ahead
+            out.append("</ol>" if ordered else "</ul>")
+            continue
+        paragraph = []
+        while (i < count and lines[i].strip() and not MANUAL_ITEM.match(lines[i])
+               and not MANUAL_HEADING.match(lines[i]) and not lines[i].lstrip().startswith("|")):
+            paragraph.append(lines[i].strip())
+            i += 1
+        out.append("<p>" + manual_inline(" ".join(paragraph)) + "</p>")
+    return "\n".join(out)
+
+
+def manual_page(text, source):
+    title = "NP assembly instructions"
+    for line in text.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+    return ("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">\n<title>{}</title>\n<style>{}</style>\n"
+            "</head><body>\n{}\n<p class=\"source\">This page is made from {}.</p>\n</body></html>\n").format(
+                html.escape(title), MANUAL_STYLE, manual_blocks(text.splitlines()), html.escape(source))
+
+
+def open_file(path):
+    """Opens `path` in the program the computer uses for it (a web page: the browser)."""
+    try:
+        if Rhino.Runtime.HostUtils.RunningOnWindows:
+            os.startfile(path)
+        else:
+            import subprocess
+            subprocess.Popen(["open", path])
+        return True
+    except Exception:
+        pass
+    try:
+        import pathlib
+        import webbrowser
+        return bool(webbrowser.open(pathlib.Path(path).as_uri()))
+    except Exception:
+        return False
+
+
+def show_instructions():
+    """Opens the assembly instructions as a page in the web browser."""
+    source = os.path.join(_INSTALL_ROOT, MANUAL_FILE)
+    if not os.path.isfile(source):
+        rs.MessageBox("The instructions are missing:\n{}\n\nRun Force Update.".format(source), 0, TITLE)
+        return
+    with open(source, "r", encoding="utf-8") as handle:
+        page = manual_page(handle.read(), MANUAL_FILE.replace(os.sep, "/"))
+    written = None
+    import tempfile
+    for folder in (os.path.join(_INSTALL_ROOT, "_user_data"), tempfile.gettempdir()):
+        try:
+            if not os.path.isdir(folder):
+                os.makedirs(folder)
+            path = os.path.join(folder, MANUAL_PAGE)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(page)
+            written = path
+            break
+        except Exception:
+            continue
+    if written is None:
+        rs.MessageBox("Could not write the instructions page. The text is here:\n{}".format(source), 0, TITLE)
+        return
+    if open_file(written):
+        print("Opened the assembly instructions in the browser: {}".format(written))
+    else:
+        rs.MessageBox("Could not open the browser. The instructions page is here:\n{}".format(written), 0, TITLE)
+
+
 def main():
     items = menu_items()
     choice = take_menu_choice(items)
@@ -1573,7 +1755,9 @@ def main():
         choice = rs.ListBox(items, "Assembly instruction steps", TITLE, items[0])
     if not choice:
         return
-    if choice == HIGHLIGHT_LABEL:
+    if choice == INSTRUCTIONS_LABEL:
+        show_instructions()
+    elif choice == HIGHLIGHT_LABEL:
         highlight()
     elif choice == CLEAR_LABEL:
         clear()

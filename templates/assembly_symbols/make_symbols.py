@@ -28,9 +28,14 @@ COLOURS = {
     "green": (112, 190, 72),
     "red": (222, 80, 64),
     "arrow": (210, 210, 210),
+    "rubber": (70, 70, 70),
+    "rubber_top": (105, 105, 105),
+    "hole": (40, 40, 40),
+    "steel": (205, 205, 205),
 }
 OUTLINE = (40, 40, 40)
 OUTLINE_PT = 0.5        # outline weight on the page
+DETAIL_PT = 0.3         # weight of detail lines drawn without a fill (tread grooves, edges)
 MARGIN_MM = 0.5         # clear space around the artwork
 
 # Size on the page, in mm, of one unit of the shape (a tool is about one unit tall).
@@ -44,6 +49,7 @@ UNIT_MM = {
     "Cross": 7.0,
     "Flip": 14.0,
     "FlipLeft": 14.0,
+    "RubberGlide": 11.0,
 }
 
 
@@ -153,6 +159,79 @@ def circle(centre, radius):
     return [("M", (centre[0] + radius, centre[1]))] + arc(centre, radius, 0.0, 360.0)
 
 
+def ellipse_arc(centre, rx, ry, start_degrees, end_degrees):
+    """Curve commands along an elliptical arc (the start point is not included)."""
+    out = []
+    for cmd in arc((0.0, 0.0), 1.0, start_degrees, end_degrees):
+        out.append(tuple([cmd[0]] + [(centre[0] + x * rx, centre[1] + y * ry) for x, y in cmd[1:]]))
+    return out
+
+
+def ellipse(centre, rx, ry):
+    return [("M", (centre[0] + rx, centre[1]))] + ellipse_arc(centre, rx, ry, 0.0, 360.0)
+
+
+def rubber_glide():
+    """Screw-on rubber foot seen from slightly above: tread on the floor face,
+    the screw coming out of the face it is screwed into. Pad 1 unit across."""
+    squash = 0.25                      # how flat the round faces look
+    top_y, height, ease = 0.2, 0.4, 0.085
+    bottom_y = top_y - height
+    r_top, r_side = 0.46, 0.5
+    pieces = []
+    # screw, behind the pad: threaded shank and a point
+    # (drawn longer than the real 0.22in so it still reads as a screw below the pad)
+    shank, thread, pitch = 0.045, 0.075, 0.05
+    tip_y = bottom_y - 0.56
+    thread_end = tip_y + 0.1
+    left, right = [(-shank, bottom_y)], [(shank, bottom_y)]
+    y, out = bottom_y - 0.1, True
+    while y > thread_end:
+        left.append((-(thread if out else shank), y))
+        if y - pitch / 2.0 > thread_end:
+            right.append(((thread if not out else shank), y - pitch / 2.0))
+        y -= pitch
+        out = not out
+    left.append((-shank * 0.9, thread_end))
+    right.append((shank * 0.9, thread_end))
+    pieces.append((polygon(left + [(0.0, tip_y)] + list(reversed(right))), "steel"))
+    # body: eased floor edge, straight side, round bottom edge
+    body = [("M", (-r_top, top_y)), ("L", (-r_side, top_y - ease)), ("L", (-r_side, bottom_y))]
+    body += ellipse_arc((0.0, bottom_y), r_side, r_side * squash, 180.0, 360.0)
+    body += [("L", (r_side, top_y - ease)), ("L", (r_top, top_y))]
+    pieces.append((body, "rubber"))
+    # the line where the eased edge meets the side
+    edge = [("M", (-r_side, top_y - ease))] + ellipse_arc((0.0, top_y - ease), r_side, r_side * squash, 180.0, 360.0)
+    pieces.append((edge, None))
+    # floor face with diamond tread grooves around the screw hole
+    pieces.append((ellipse((0.0, top_y), r_top, r_top * squash), "rubber_top"))
+    reach, hole_r, gap, spacing = r_top * 0.9, 0.12, 0.17, 0.16
+    for sign in (1.0, -1.0):
+        normal = (math.sqrt(0.5), sign * math.sqrt(0.5))
+        along = (-normal[1], normal[0])
+        k = -4
+        while k <= 4:
+            t = k * spacing
+            k += 1
+            if abs(t) >= reach:
+                continue
+            half = math.sqrt(reach * reach - t * t)
+            spans = [(-half, half)]
+            if abs(t) < gap:
+                cut = math.sqrt(gap * gap - t * t)
+                spans = [(-half, -cut), (cut, half)]
+            for a, b in spans:
+                ends = []
+                for sv in (a, b):
+                    u = normal[0] * t + along[0] * sv
+                    v = normal[1] * t + along[1] * sv
+                    ends.append((u, top_y + v * squash))
+                pieces.append(([("M", ends[0]), ("L", ends[1])], None))
+    pieces.append((ellipse((0.0, top_y), hole_r, hole_r * squash), "hole"))
+    pieces.append((ellipse((0.0, top_y - 0.03), 0.075, 0.075 * squash), "steel"))
+    return pieces
+
+
 def flip_arrow(mirror=False):
     """Broad arrow curving over the top and down the right side (left when mirrored)."""
     radius, half, head, start, end, head_span = 0.42, 0.085, 0.2, 150.0, -25.0, 38.0
@@ -182,7 +261,8 @@ def moved(path, degrees):
 
 
 def symbol(name):
-    """[(path, colour name)] back to front."""
+    """[(path, colour name)] back to front. A colour of None is a detail line:
+    drawn open, without a fill, at DETAIL_PT."""
     if name == "GlueBottle":
         centre_y = 0.72
         pieces = [
@@ -233,6 +313,8 @@ def symbol(name):
         return [(flip_arrow(False), "arrow")]
     if name == "FlipLeft":
         return [(flip_arrow(True), "arrow")]
+    if name == "RubberGlide":
+        return rubber_glide()
     raise ValueError(name)
 
 
@@ -290,7 +372,11 @@ def write_svg(name, folder=HERE):
         for cmd in path:
             points = [to_page(p) for p in cmd[1:]]
             parts.append(cmd[0] + " " + " ".join("{},{}".format(number(x), number(height - y)) for x, y in points))
-        lines.append('    <path d="{} Z" fill="rgb({},{},{})"/>'.format(" ".join(parts), *COLOURS[colour]))
+        if colour is None:
+            lines.append('    <path d="{}" fill="none" stroke-width="{}"/>'.format(
+                " ".join(parts), number(DETAIL_PT * 25.4 / 72.0)))
+        else:
+            lines.append('    <path d="{} Z" fill="rgb({},{},{})"/>'.format(" ".join(parts), *COLOURS[colour]))
     lines += ["  </g>", "</svg>", ""]
     path = os.path.join(folder, name + ".svg")
     with open(path, "w") as handle:
@@ -305,11 +391,15 @@ def write_pdf(name, folder=HERE):
            "{} {} {} RG".format(*[number(c / 255.0) for c in OUTLINE])]
     letters = {"M": "m", "L": "l", "C": "c"}
     for path, colour in pieces:
-        ops.append("{} {} {} rg".format(*[number(c / 255.0) for c in COLOURS[colour]]))
+        if colour is not None:
+            ops.append("{} {} {} rg".format(*[number(c / 255.0) for c in COLOURS[colour]]))
         for cmd in path:
             points = [to_page(p) for p in cmd[1:]]
             ops.append(" ".join("{} {}".format(number(x * k), number(y * k)) for x, y in points) + " " + letters[cmd[0]])
-        ops.append("h B")
+        if colour is None:
+            ops.append("{} w S {} w".format(number(DETAIL_PT), number(OUTLINE_PT)))
+        else:
+            ops.append("h B")
     stream = "\n".join(ops).encode("ascii")
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",

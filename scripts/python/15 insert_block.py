@@ -33,6 +33,7 @@ CATALOG = [
     ("Table leg bolt and nut (pick a hole)", "table_leg_bolt", "NP-Fittings"),
     ("Cam", "cam", "NP-Fittings"),
     ("Glide", "glide", "NP-Fittings"),
+    ("Rubber glide", "rubber_glide", "NP-Fittings"),
     ("Flipper pin", "flipper_pin", "NP-Fittings"),
     ("Flipper receptacle", "flipper_receptacle", "NP-Fittings"),
     ("Castor small", "ACC-CST-SM", "NP-Fittings"),
@@ -80,6 +81,7 @@ ORIENT_TO_FACE = {
     "screw_1-1-4in_csk",
     "screw_1-1-2in_pan",
     "screw_1-1-2in_csk",
+    "rubber_glide",   # screw-on rubber foot: pad stands out of the face, screw goes in
 }
 FACE_SEARCH_RADIUS = 0.5  # model units: how far from the pick to look for a face or hole wall
 

@@ -16,6 +16,7 @@ placed at 100% they are the same size in every drawing.
 | Cross | `Cross` | 6.6 x 6.6 mm |
 | Flip the product (arrow turning to the right) | `Flip` | 15.2 x 13.5 mm |
 | Flip the product (arrow turning to the left) | `FlipLeft` | 15.2 x 13.5 mm |
+| Rubber glide (screw-on rubber foot) | `RubberGlide` | 12.2 x 13.0 mm |
 
 Each symbol is here as a `.pdf` and an `.svg` with the same artwork. Use one
 format, not both.
@@ -23,7 +24,7 @@ format, not both.
 ## Put them in the shared CC Library (once)
 
 1. In InDesign open **Window → CC Libraries** and choose the team library.
-2. Drag the nine files of one format from this folder into the panel.
+2. Drag the files of one format from this folder into the panel.
 
 From then on the library copy is the master. Everyone with the library has the
 symbols, and nobody needs this folder.
